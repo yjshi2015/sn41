@@ -6,8 +6,6 @@ import json
 import bittensor as bt
 from typing import Tuple
 
-from protocol import Dummy
-
 class Miner:
     def __init__(self, interactive_mode=True, wallet_name=None, hotkey_name=None, network=None, polymarket_id=None):
         self.interactive_mode = interactive_mode
@@ -89,20 +87,6 @@ class Miner:
             # Each miner gets a unique identity (UID) in the network.
             self.my_subnet_uid = self.metagraph.hotkeys.index(self.wallet.hotkey.ss58_address)
             bt.logging.info(f"Running miner on uid: {self.my_subnet_uid}")
-
-    def blacklist_fn(self, synapse: Dummy) -> Tuple[bool, str]:
-        # Ignore requests from unrecognized entities.
-        if synapse.dendrite.hotkey not in self.metagraph.hotkeys:
-            bt.logging.trace(f'Blacklisting unrecognized hotkey {synapse.dendrite.hotkey}')
-            return True, None
-        bt.logging.trace(f'Not blacklisting recognized hotkey {synapse.dendrite.hotkey}')
-        return False, None
-
-    def dummy(self, synapse: Dummy) -> Dummy:
-        # Simple logic: return the input value multiplied by 2.
-        synapse.dummy_output = synapse.dummy_input * 2
-        bt.logging.info(f"Received input: {synapse.dummy_input}, sending output: {synapse.dummy_output}")
-        return synapse
 
     def setup_axon(self):
         # Build and link miner functions to the axon.
