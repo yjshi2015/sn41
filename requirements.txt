@@ -1,1 +1,6 @@
 bittensor>=7.4.0
+
+pandas
+matplotlib
+tabulate
+requests
