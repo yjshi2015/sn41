@@ -15,6 +15,7 @@ import numpy as np
 
 from metadata_manager import MetadataManager
 from scoring import score_miners, calculate_weights, print_pool_stats
+from storage.postgres_validator_storage import log_scores_to_database, get_storage
 from constants import (
     ROLLING_HISTORY_IN_DAYS,
     TOTAL_MINER_ALPHA_PER_DAY,
@@ -76,6 +77,19 @@ class Validator:
         
         self.node = SubstrateInterface(url=endpoint)
 
+        # If DB score logging is enabled, initialize and test storage connection
+        if getattr(self.config, 'db_score_logging', False):
+            try:
+                bt.logging.info("Initializing PostgreSQL storage (db_score_logging)...")
+                storage = get_storage()
+                storage.initialize()
+                bt.logging.success("✅ PostgreSQL storage initialized and tables ensured.")
+            except Exception as e:
+                bt.logging.error(f"❌ Failed to initialize PostgreSQL storage: {e}")
+                bt.logging.warning("Disabling db_score_logging for this run to avoid runtime failures.")
+                # Disable DB logging for the remainder of the run
+                self.config.db_score_logging = False
+
     def get_config(self):
         # Set up the configuration parser.
         parser = argparse.ArgumentParser()
@@ -93,6 +107,8 @@ class Validator:
         parser.add_argument('--auto_update', action='store_true', help="Enable auto-update of the validator.")
         # Adds metadata manager arguments.
         parser.add_argument('--metadata_manager.off', action='store_true', help="Disable metadata manager.")
+        # Adds postgres database score logging.
+        parser.add_argument('--db_score_logging', action='store_true', help="Enable postgres database score logging.")
         # Parse the config.
         config = bt.config(parser)
         # Set up logging directory.
@@ -398,6 +414,12 @@ class Validator:
                         bt.logging.info(f"Transaction result: {result}")
                     else:
                         bt.logging.error(f"❌ Failed to set weights on subnet {self.config.netuid}")
+
+                    if self.config.db_score_logging:
+                        # Log the scores to the database
+                        bt.logging.info(f"Logging scores to database...")
+                        log_scores_to_database(miner_history, general_pool_history, miners_scores, general_pool_scores, miner_budget, general_pool_budget, all_hotkeys)
+                        bt.logging.success(f"✅ Successfully logged scores to database!")
 
                 else:
                     # Check if we should restart the validator for auto update.

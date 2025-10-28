@@ -1,6 +1,7 @@
 __pycache__/
 venv/
 
+storage.env
 validator_state_*.json
 
 sims/
