@@ -201,6 +201,10 @@ else:
     score = 0
 ```
 
+# Optional Validator dependencies if running with postgres database
+python-dotenv
+psycopg2-binary
+
 ### Changing Network Parameters
 
 You can adjust network parameters like `netuid`, timeouts, and other settings via command-line arguments or by modifying the code.

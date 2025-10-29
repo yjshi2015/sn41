@@ -296,12 +296,13 @@ def build_epoch_history(
     # n_epochs was already calculated above based on target_epoch_idx
     
     # Initialize matrices (like simulate_epochs.py)
-    volume_prev = np.zeros((n_epochs, n_entities))        # volume
-    qualified_prev = np.zeros((n_epochs, n_entities))     # qualified volume
-    unqualified_prev = np.zeros((n_epochs, n_entities))   # losing volume
-    profit_prev = np.zeros((n_epochs, n_entities))        # profit
-    fees_prev = np.zeros((n_epochs, n_entities))          # fees collected
-    trade_counts = np.zeros((n_epochs, n_entities))       # number of trades
+    volume_prev = np.zeros((n_epochs, n_entities))          # volume
+    qualified_prev = np.zeros((n_epochs, n_entities))       # qualified volume
+    unqualified_prev = np.zeros((n_epochs, n_entities))     # losing volume
+    profit_prev = np.zeros((n_epochs, n_entities))          # profit
+    fees_prev = np.zeros((n_epochs, n_entities))            # fees collected
+    trade_counts = np.zeros((n_epochs, n_entities))         # number of trades
+    correct_trade_counts = np.zeros((n_epochs, n_entities)) # number of correct trades
     
     # Second pass: populate matrices
     for epoch_idx in range(n_epochs):
@@ -327,6 +328,7 @@ def build_epoch_history(
                     # Winning trade: qualified volume (after fee deduction) -- @TODO: verify with Stephen
                     qualified = volume * (1.0 - VOLUME_FEE)
                     qualified_prev[epoch_idx, col_idx] += qualified
+                    correct_trade_counts[epoch_idx, col_idx] += 1
                 else:
                     # Losing trade: unqualified volume
                     unqualified_prev[epoch_idx, col_idx] += volume
@@ -341,6 +343,7 @@ def build_epoch_history(
         "profit_prev": profit_prev,
         "fees_prev": fees_prev,
         "trade_counts": trade_counts,
+        "correct_trade_counts": correct_trade_counts,
         "entity_ids": entity_ids,
         "entity_map": entity_map,
         "epoch_dates": [str(d) for d in epoch_dates],
@@ -663,7 +666,8 @@ def score_with_epochs(
         "sol2": sol2,
         "total_volume": total_volume,
         "total_profit": total_profit,
-        "roi_trailing": roi_trailing
+        "roi_trailing": roi_trailing,
+        "kappa_bar": kappa_bar
     }
 
 def solve_phase1(p, verbose=False):
