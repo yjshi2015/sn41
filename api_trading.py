@@ -36,9 +36,10 @@ from eth_account.messages import encode_defunct
 from eth_account.messages import encode_typed_data as EIP712_ENCODE  # type: ignore
 import time
 import secrets
+from constants import VOLUME_FEE
 
-ALMANAC_API_URL = "https://almanac.market/api"
-#ALMANAC_API_URL = "http://localhost:3001/api"
+#ALMANAC_API_URL = "https://almanac.market/api"
+ALMANAC_API_URL = "http://localhost:3001/api"
 POLYMARKET_CLOB_HOST = "https://clob.polymarket.com"
 POLYGON_CHAIN_ID = 137
 # EIP-712 domain contract for Polymarket CTF Exchange
@@ -308,6 +309,9 @@ def _place_order_now(market: dict, chosen_outcome_name: str | None = None, chose
     
     side_upper = "BUY" if side == "buy" else "SELL"
     notional = size * price
+    # Fee calculation is for display only - we send original size/price to API
+    fee = notional * VOLUME_FEE
+    total_with_fee = notional + fee
     
     # Display summary
     print("\n" + "="*60)
@@ -320,7 +324,9 @@ def _place_order_now(market: dict, chosen_outcome_name: str | None = None, chose
     print(f"Order Type: {order_type}")
     print(f"Size: {size}")
     print(f"Price: {price}")
-    print(f"Total Notional: ${notional:.2f}")
+    print(f"Subtotal: ${notional:.2f}")
+    print(f"Platform Fee ({VOLUME_FEE*100:.1f}%): ${fee:.2f}")
+    print(f"Total: ${total_with_fee:.2f}")
     print("="*60)
     
     # Final confirmation
