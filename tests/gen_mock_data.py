@@ -368,19 +368,22 @@ class TradingSimulator:
         
         # Generate trade data
         trade = {
-            'trade_id': self.trade_id_counter,
+            'position_id': self.trade_id_counter,
             'account_id': gambler.account_id,
             'profile_id': gambler.profile_id,
             'miner_id': gambler.miner_id,
             'miner_hotkey': gambler.miner_hotkey,
             'is_general_pool': gambler.is_general_pool,
             'market_id': market_id,
+            'token_id': False, # not used for simulation
             'date_created': date.strftime('%Y-%m-%d'),
             'volume': round(stake, 2),
+            'expected_fees': round(stake * FEE_RATE, 2),
+            'actual_fees': round(stake * FEE_RATE, 2),
             'pnl': round(profit, 2),
             'is_correct': win,
-            'is_settled': True,  # All trades are settled for simulation
-            'date_settled': (date + timedelta(days=int(self.rng.integers(1, 4)))).strftime('%Y-%m-%d'),
+            'is_completed': True,  # All trades are completed for simulation
+            'completed_at': (date + timedelta(days=int(self.rng.integers(1, 4)))).strftime('%Y-%m-%d'),
             'trade_type': self.rng.choice(['buy', 'sell']),
             'price': round(self.rng.uniform(0.3, 0.8), 1),
             'is_reward_eligible': True
@@ -711,7 +714,7 @@ def generate_advanced_mock_data(
         'volume': 'sum',
         'pnl': 'sum',
         'is_correct': 'sum',
-        'trade_id': 'count'
+        'position_id': 'count'
     }).round(2)
     miner_summary.columns = ['Total_Volume', 'Total_PnL', 'Wins', 'Total_Trades']
     miner_summary['Win_Rate'] = (miner_summary['Wins'] / miner_summary['Total_Trades'] * 100).round(1)

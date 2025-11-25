@@ -109,7 +109,7 @@ from constants import (
 def score_miners(
     all_uids: List[int],
     all_hotkeys: List[str],
-    trading_history: Dict[str, Any],
+    trading_history: List[Dict[str, Any]],
     current_epoch_budget: float,
     verbose: bool = True,
     target_epoch_idx: int = None
@@ -131,26 +131,37 @@ def score_miners(
         raise ValueError("all_uids is required")
     if all_hotkeys is None:
         raise ValueError("all_hotkeys is required")
+    
+    # Normalize trading_history to always be a list
+    # Handle case where API might return dict with "data" field (defensive programming)
+    if isinstance(trading_history, dict):
+        if "data" in trading_history:
+            trading_history = trading_history["data"]
+        else:
+            raise ValueError(f"trading_history is a dict but missing 'data' field. Keys: {list(trading_history.keys())}")
+    if not isinstance(trading_history, list):
+        raise ValueError(f"trading_history must be a list or dict with 'data' field, got {type(trading_history)}")
 
     # Convert the trading history to match the format expected by the scoring function
     """
     {
-        "trade_id":2206,
-        "account_id":1,
-        "profile_id":"0x1234",
-        "miner_id":44,
-        "miner_hotkey":"5F12345",
-        "is_general_pool":true,
-        "market_id":"nba_celtics_knicks_2025",
-        "date_created":"2025-07-22",
-        "volume":859,
-        "pnl":621.858553239,
-        "is_correct":true,
-        "is_settled":true,
-        "date_settled":"2025-07-25",
-        "trade_type":"buy",
-        "price":0.5,
-        "is_reward_eligible":true
+        "position_id": 69,
+        "account_id": 3,
+        "profile_id": "0xc70",
+        "miner_id": 17,
+        "miner_hotkey": "5EqZoEKc6c8TaG4xRRHTT1uZiQF5jkjQCeUV5t77L6YbeaJ8",
+        "is_general_pool": false,
+        "market_id": "684074",
+        "token_id": "17172534480191114731684649039231483628133799672384902614021128663005351577066",
+        "date_created": "2025-11-21T23:18:22.076Z",
+        "volume": 4.99998838889,
+        "expected_fees": 0.0499998838889,
+        "actual_fees": 0.05,
+        "pnl": 6.11112161111,
+        "is_correct": true,
+        "is_completed": true,
+        "completed_at": "2025-11-22T11:31:15.127Z",
+        "is_reward_eligible": true
     }
     """
 
@@ -292,15 +303,15 @@ def build_epoch_history(
         if trade["account_id"] is None:
             continue
         
-        # Skip if the trade is not settled
-        if not trade["is_settled"]:
+        # Skip if the trade is not completed
+        if not trade["is_completed"]:
             continue
             
         # Parse date
-        date_settled = trade["date_settled"]
-        if isinstance(date_settled, str):
-            date_settled = datetime.fromisoformat(date_settled.replace('Z', '+00:00'))
-        trade_date = date_settled.date()
+        date_completed = trade["completed_at"]
+        if isinstance(date_completed, str):
+            date_completed = datetime.fromisoformat(date_completed.replace('Z', '+00:00'))
+        trade_date = date_completed.date()
         
         # Find epoch index
         if trade_date < epoch_dates[0] or trade_date >= today.date():
@@ -368,16 +379,19 @@ def build_epoch_history(
             is_correct = trade["is_correct"]
             is_reward_eligible = trade["is_reward_eligible"]
             
-            # Calculate metrics (matching simulate_epochs.py logic)
-            fee = volume * VOLUME_FEE
+            # Calculate metrics
+            #fee = volume * VOLUME_FEE
+            fee = trade["actual_fees"]
+
             # Always collect fees for all trades, even if the trade is not reward eligible
             fees_prev[epoch_idx, col_idx] += fee
             
-            if is_reward_eligible:
+            if is_reward_eligible and fee > 0:
                 volume_prev[epoch_idx, col_idx] += volume
                 if is_correct:
-                    # Winning trade: qualified volume (after fee deduction) -- @TODO: verify with Stephen
-                    qualified = volume * (1.0 - VOLUME_FEE)
+                    # Winning trade: qualified volume (after fee deduction)
+                    #qualified = volume * (1.0 - VOLUME_FEE)
+                    qualified = volume - fee
                     qualified_prev[epoch_idx, col_idx] += qualified
                     correct_trade_counts[epoch_idx, col_idx] += 1
                 else:

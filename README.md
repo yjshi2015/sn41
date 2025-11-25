@@ -98,7 +98,7 @@ cd sn41
 ```
 2. Next, install the requirements: `pip install -r requirements.txt`
 3. Run `python miner.py` and follow prompts to submit your Polymarket wallet address to the subnet blockchain metadata.
-- Run `python miner.py --subtensor.network test --netuid 172` for testnet
+- Run `python miner.py --subtensor.network test` for testnet
 
 #### Miner Trading with Almanac dApp
 Miners are more than welcome to trade directly on [Almanac](https://almanac.market). Once the steps above are completed, use the app to make trades and validators will automoatically pick up your trading history performance and score you accordingly.
