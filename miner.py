@@ -330,9 +330,27 @@ class Miner:
         Prompts user for wallet name, network, and polymarket ID.
         Skips prompts if CLI arguments are already provided.
         """
-        print("\n" + "="*60)
-        print("🔧 SN41 ALMANAC MINER SETUP")
-        print("="*60)
+        # ASCII Art Banner
+        ascii_banner = """
+
+     $$$$$$\  $$\       $$\      $$\  $$$$$$\  $$\   $$\  $$$$$$\   $$$$$$\  
+    $$  __$$\ $$ |      $$$\    $$$ |$$  __$$\ $$$\  $$ |$$  __$$\ $$  __$$\ 
+    $$ /  $$ |$$ |      $$$$\  $$$$ |$$ /  $$ |$$$$\ $$ |$$ /  $$ |$$ /  \__|
+    $$$$$$$$ |$$ |      $$\$$\$$ $$ |$$$$$$$$ |$$ $$\$$ |$$$$$$$$ |$$ |      
+    $$  __$$ |$$ |      $$ \$$$  $$ |$$  __$$ |$$ \$$$$ |$$  __$$ |$$ |      
+    $$ |  $$ |$$ |      $$ |\$  /$$ |$$ |  $$ |$$ |\$$$ |$$ |  $$ |$$ |  $$\ 
+    $$ |  $$ |$$$$$$$$\ $$ | \_/ $$ |$$ |  $$ |$$ | \$$ |$$ |  $$ |\$$$$$$  |
+    \__|  \__|\________|\__|     \__|\__|  \__|\__|  \__|\__|  \__| \______/ 
+                                                                                                                                           
+                               Powered by
+                   ╔═╗╔═╗╔═╗╦═╗╔╦╗╔═╗╔╦╗╔═╗╔╗╔╔═╗╔═╗╦═╗
+                   ╚═╗╠═╝║ ║╠╦╝ ║ ╚═╗ ║ ║╣ ║║║╚═╗║ ║╠╦╝
+                   ╚═╝╩  ╚═╝╩╚═ ╩ ╚═╝ ╩ ╚═╝╝╚╝╚═╝╚═╝╩╚═
+
+    ________________________________________________________________________
+
+"""
+        print(ascii_banner)
         print("This script will help you configure your miner for the subnet.")
         print("You'll need to provide your wallet information and Polymarket profile ID.\n")
         
@@ -420,7 +438,7 @@ class Miner:
         
         if existing_commitment and existing_commitment != 'None' and existing_commitment.strip():
             print(f"⚠️  Existing metadata found: {existing_commitment}")
-            print("Note: Only the first 5 characters of the original Polymarket ID are stored on-chain.")
+            print("Note: Only the first 5 characters of your Almanac/Polymarket Ethereum address (EOA) are stored on-chain for privacy.")
         else:
             print("✅ No existing metadata found.")
         
@@ -436,7 +454,7 @@ class Miner:
             print(f"Existing Metadata: {existing_commitment}")
         print("="*60)
         
-        proceed = input("\nDo you want to submit/update your Polymarket ID metadata? (y/N): ").strip().lower()
+        proceed = input("\nDo you want to submit/update your Almanac/Polymarket Ethereum address (EOA) metadata? (y/N): ").strip().lower()
         if proceed not in ['y', 'yes']:
             print("✅ Setup completed. No metadata changes made.")
             return True  # Return True since validation was successful
@@ -447,11 +465,11 @@ class Miner:
             print(f"\n✅ Polymarket ID: {polymarket_id}")
         else:
             while True:
-                polymarket_id = input("\nEnter your Polymarket profile ID (Polygon address starting with 0x): ").strip()
+                polymarket_id = input("\nEnter your Almanac/Polymarket Ethereum address (EOA) starting with 0x: ").strip()
                 if self.validate_polygon_address(polymarket_id):
                     break
-                print("❌ Invalid Polygon address format. Please enter a valid address (0x followed by 40 hex characters).")
-            print(f"\n✅ Polymarket ID: {polymarket_id}")
+                print("❌ Invalid EOA address format. Please enter a valid address (0x followed by 40 hex characters).")
+            print(f"\n✅ EOA Address: {polymarket_id}")
         
         # Final confirmation for metadata submission
         print("\n" + "="*60)
@@ -497,8 +515,8 @@ class Miner:
                 network=network,
             )
             print(f"Retrieved commitment: {retrieved}")
-            print("\n📝 Note: Only the first 5 characters of your Polymarket ID are stored on-chain for privacy.")
-            print(f"Your full Polymarket ID: {polymarket_id}")
+            print("\n📝 Note: Only the first 5 characters of your Almanac/Polymarket ID are stored on-chain for privacy.")
+            print(f"Your full Almanac/Polymarket ID: {polymarket_id}")
             print(f"Stored on-chain: {polymarket_id[:5]}")
             print("\n🎉 Setup complete! Your miner is now configured.")
             return True
@@ -520,7 +538,7 @@ def main():
     parser.add_argument('--wallet.name', dest='wallet_name', help='Wallet name (coldkey)')
     parser.add_argument('--wallet.hotkey', dest='hotkey_name', help='Hotkey name')
     parser.add_argument('--subtensor.network', dest='network', help='Network (finney or test)')
-    parser.add_argument('--polymarket.id', dest='polymarket_id', help='Polymarket profile ID (Polygon address)')
+    parser.add_argument('--polymarket.id', dest='polymarket_id', help='Almanac/Polymarket ID (EOA address)')
     
     args = parser.parse_args()
     

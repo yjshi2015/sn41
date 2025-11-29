@@ -6,7 +6,7 @@ import datetime
 import time
 import wandb
 import json
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 import requests
 from requests.auth import HTTPBasicAuth
 from subprocess import Popen, PIPE
@@ -34,9 +34,10 @@ class Validator:
         #self.moving_avg_scores = [1.0] * len(self.metagraph.S)
         #self.alpha = 0.1
 
-        self.trading_history_endpoint = "https://almanac.market/api/trading_history"
+        self.trading_history_endpoint = "https://almanac.market/api/v1/trading/trading-history"
         if self.config.subtensor.network == "test":
-            self.trading_history_endpoint = "https://test.almanac.market/api/trading_history"
+            self.trading_history_endpoint = "https://test.almanac.market/api/v1/trading/trading-history"
+            #self.trading_history_endpoint = "http://localhost:3001/api/v1/trading/trading-history"
         self.rolling_history_in_days = ROLLING_HISTORY_IN_DAYS
 
         # Set up auto update.
@@ -109,6 +110,8 @@ class Validator:
         parser.add_argument('--metadata_manager.off', action='store_true', help="Disable metadata manager.")
         # Adds postgres database score logging.
         parser.add_argument('--db_score_logging', action='store_true', help="Enable postgres database score logging.")
+        # Adds a flag to use synthetic data for testing
+        parser.add_argument('--use_synthetic_data', action='store_true', help="Use synthetic data for testing.")
         # Parse the config.
         config = bt.config(parser)
         # Set up logging directory.
@@ -253,9 +256,9 @@ class Validator:
                     bt.logging.warning(f"⚠️ {func.__name__} attempt {attempt + 1} failed: {str(e)}. Retrying in {delay} seconds...")
                     time.sleep(delay)
 
-    def fetch_trading_history(self) -> Dict:
+    def fetch_trading_history(self) -> List[Dict]:
         def _fetch():
-            if self.config.subtensor.network == "test":
+            if self.config.use_synthetic_data:
                 # Let's load in synthetic data for now
                 with open("tests/advanced_mock_data.json", "r") as f:
                     trading_history = json.load(f)
@@ -285,7 +288,17 @@ class Validator:
                     timeout=10
                 )
                 response.raise_for_status()
-                return response.json()
+                api_response = response.json()
+                
+                # Extract the data field from the API response
+                # API returns: {"success": true, "data": [...], "meta": {...}, "timestamp": "..."}
+                if isinstance(api_response, dict) and "data" in api_response:
+                    trading_history = api_response["data"]
+                    if not isinstance(trading_history, list):
+                        raise ValueError(f"Expected 'data' field to be a list, got {type(trading_history)}")
+                    return trading_history
+                else:
+                    raise ValueError(f"Unexpected API response format: {type(api_response)}. Expected dict with 'data' field.")
         
         return self._retry_with_backoff(_fetch)
 
@@ -459,5 +472,30 @@ class Validator:
 
 # Run the validator.
 if __name__ == "__main__":
+
+    ascii_banner = """
+    
+    ________________________________________________________________________
+    
+
+     $$$$$$\  $$\       $$\      $$\  $$$$$$\  $$\   $$\  $$$$$$\   $$$$$$\  
+    $$  __$$\ $$ |      $$$\    $$$ |$$  __$$\ $$$\  $$ |$$  __$$\ $$  __$$\ 
+    $$ /  $$ |$$ |      $$$$\  $$$$ |$$ /  $$ |$$$$\ $$ |$$ /  $$ |$$ /  \__|
+    $$$$$$$$ |$$ |      $$\$$\$$ $$ |$$$$$$$$ |$$ $$\$$ |$$$$$$$$ |$$ |      
+    $$  __$$ |$$ |      $$ \$$$  $$ |$$  __$$ |$$ \$$$$ |$$  __$$ |$$ |      
+    $$ |  $$ |$$ |      $$ |\$  /$$ |$$ |  $$ |$$ |\$$$ |$$ |  $$ |$$ |  $$\ 
+    $$ |  $$ |$$$$$$$$\ $$ | \_/ $$ |$$ |  $$ |$$ | \$$ |$$ |  $$ |\$$$$$$  |
+    \__|  \__|\________|\__|     \__|\__|  \__|\__|  \__|\__|  \__| \______/ 
+                                                                                                                                           
+                               Powered by
+                   ╔═╗╔═╗╔═╗╦═╗╔╦╗╔═╗╔╦╗╔═╗╔╗╔╔═╗╔═╗╦═╗
+                   ╚═╗╠═╝║ ║╠╦╝ ║ ╚═╗ ║ ║╣ ║║║╚═╗║ ║╠╦╝
+                   ╚═╝╩  ╚═╝╩╚═ ╩ ╚═╝ ╩ ╚═╝╝╚╝╚═╝╚═╝╩╚═
+
+    ________________________________________________________________________
+
+"""
+    print(ascii_banner)
+
     validator = Validator()
     validator.run()

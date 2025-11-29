@@ -24,7 +24,7 @@ except ImportError:
     DOTENV_AVAILABLE = False
     load_dotenv = None
 
-from constants import MINER_WEIGHT_PERCENTAGE, GENERAL_POOL_WEIGHT_PERCENTAGE
+from constants import MINER_WEIGHT_PERCENTAGE, GENERAL_POOL_WEIGHT_PERCENTAGE, ENABLE_STATIC_WEIGHTING
 
 
 class PostgresValidatorStorage():
@@ -514,7 +514,7 @@ def log_scores_to_database(miner_history, general_pool_history, miners_scores, g
         total_fees = round(float(np.sum(miner_current_fees) + np.sum(gp_current_fees)), 2)
         total_payouts = round(float(np.sum(miners_scores.get('tokens', [])) + np.sum(general_pool_scores.get('tokens', []))), 2)
         
-        # Calculate MP (Market Prediction) and GP (General Pool) breakdowns
+        # Calculate MP (Miner Pool) and GP (General Pool) breakdowns
         mp_budget = round(float(miner_budget), 2)
         gp_budget = round(float(general_pool_budget), 2)
         mp_volume = round(float(np.sum(miner_current_volume)), 2)
@@ -527,6 +527,13 @@ def log_scores_to_database(miner_history, general_pool_history, miners_scores, g
         # Extract kappa values from the scoring results (round to 6 decimal places for ratios)
         mp_kappa = round(float(miners_scores.get('kappa_bar', 0.0)), 6)
         gp_kappa = round(float(general_pool_scores.get('kappa_bar', 0.0)), 6)
+
+        if ENABLE_STATIC_WEIGHTING:
+            mp_weight_percentage = MINER_WEIGHT_PERCENTAGE
+            gp_weight_percentage = GENERAL_POOL_WEIGHT_PERCENTAGE
+        else:
+            mp_weight_percentage = round(float(miner_budget / total_budget), 6) if miner_budget > 0 and total_budget > 0 else 0.0
+            gp_weight_percentage = round(float(general_pool_budget / total_budget), 6) if general_pool_budget > 0 and total_budget > 0 else 0.0
         
         # Insert epoch-level data
         epoch_data = {
@@ -545,8 +552,8 @@ def log_scores_to_database(miner_history, general_pool_history, miners_scores, g
             "gp_payouts": gp_payouts,
             "mp_kappa": mp_kappa,
             "gp_kappa": gp_kappa,
-            "mp_weight_percentage": MINER_WEIGHT_PERCENTAGE,
-            "gp_weight_percentage": GENERAL_POOL_WEIGHT_PERCENTAGE
+            "mp_weight_percentage": mp_weight_percentage,
+            "gp_weight_percentage": gp_weight_percentage
         }
         storage.insert_epoch_scores(epoch_data)
         

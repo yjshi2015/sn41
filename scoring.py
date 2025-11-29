@@ -93,20 +93,23 @@ from constants import (
   RHO_CAP,
   KAPPA_NEXT,
   KAPPA_SCALING_FACTOR,
+  ENABLE_STATIC_WEIGHTING,
   GENERAL_POOL_WEIGHT_PERCENTAGE,
   MINER_WEIGHT_PERCENTAGE,
   MIN_EPOCHS_FOR_ELIGIBILITY,
   MIN_PREDICTIONS_FOR_ELIGIBILITY,
-  MIN_ACTIVE_EPOCHS,
   BURN_UID,
   EXCESS_MINER_WEIGHT_UID,
   EXCESS_MINER_MIN_WEIGHT,
+  MAX_EPOCH_BUDGET_PERCENTAGE_FOR_BOOST,
+  MINER_POOL_BUDGET_BOOST_PERCENTAGE,
+  MINER_POOL_WEIGHT_BOOST_PERCENTAGE
 )
 
 def score_miners(
     all_uids: List[int],
     all_hotkeys: List[str],
-    trading_history: Dict[str, Any],
+    trading_history: List[Dict[str, Any]],
     current_epoch_budget: float,
     verbose: bool = True,
     target_epoch_idx: int = None
@@ -128,26 +131,37 @@ def score_miners(
         raise ValueError("all_uids is required")
     if all_hotkeys is None:
         raise ValueError("all_hotkeys is required")
+    
+    # Normalize trading_history to always be a list
+    # Handle case where API might return dict with "data" field (defensive programming)
+    if isinstance(trading_history, dict):
+        if "data" in trading_history:
+            trading_history = trading_history["data"]
+        else:
+            raise ValueError(f"trading_history is a dict but missing 'data' field. Keys: {list(trading_history.keys())}")
+    if not isinstance(trading_history, list):
+        raise ValueError(f"trading_history must be a list or dict with 'data' field, got {type(trading_history)}")
 
     # Convert the trading history to match the format expected by the scoring function
     """
     {
-        "trade_id":2206,
-        "account_id":1,
-        "profile_id":"0x1234",
-        "miner_id":44,
-        "miner_hotkey":"5F12345",
-        "is_general_pool":true,
-        "market_id":"nba_celtics_knicks_2025",
-        "date_created":"2025-07-22",
-        "volume":859,
-        "pnl":621.858553239,
-        "is_correct":true,
-        "is_settled":true,
-        "date_settled":"2025-07-25",
-        "trade_type":"buy",
-        "price":0.5,
-        "is_reward_eligible":true
+        "position_id": 69,
+        "account_id": 3,
+        "profile_id": "0xc70",
+        "miner_id": 17,
+        "miner_hotkey": "5EqZoEKc6c8TaG4xRRHTT1uZiQF5jkjQCeUV5t77L6YbeaJ8",
+        "is_general_pool": false,
+        "market_id": "684074",
+        "token_id": "17172534480191114731684649039231483628133799672384902614021128663005351577066",
+        "date_created": "2025-11-21T23:18:22.076Z",
+        "volume": 4.99998838889,
+        "expected_fees": 0.0499998838889,
+        "actual_fees": 0.05,
+        "pnl": 6.11112161111,
+        "is_correct": true,
+        "is_completed": true,
+        "completed_at": "2025-11-22T11:31:15.127Z",
+        "is_reward_eligible": true
     }
     """
 
@@ -174,19 +188,54 @@ def score_miners(
     miner_fees = np.sum(miner_history["fees_prev"][epoch_idx]) if miner_history["n_entities"] > 0 else 0.0
     gp_fees = np.sum(general_pool_history["fees_prev"][epoch_idx]) if general_pool_history["n_entities"] > 0 else 0.0
     current_epoch_fees_collected = miner_fees + gp_fees
-    # Calculate the budget for each pool based on our constants
-    miner_pool_epoch_fees = current_epoch_fees_collected * MINER_WEIGHT_PERCENTAGE
-    general_pool_epoch_fees = current_epoch_fees_collected * GENERAL_POOL_WEIGHT_PERCENTAGE
     
-    # Calculate the subnet budget for each pool based on our constants. This is the total budget for the subnet for the epoch.
-    miner_pool_epoch_budget = current_epoch_budget * MINER_WEIGHT_PERCENTAGE
-    general_pool_epoch_budget = current_epoch_budget * GENERAL_POOL_WEIGHT_PERCENTAGE
+    print(f"Current epoch fees collected: {current_epoch_fees_collected:,.2f}")
+    print(f"-> Miner pool fees: {miner_fees:,.2f}")
+    print(f"-> General pool fees: {gp_fees:,.2f}")
+
+    if ENABLE_STATIC_WEIGHTING:
+        # Calculate the budget for each pool based on our constants that reallocate the total fees collected to the miners and general pool.
+        miner_pool_epoch_fees = current_epoch_fees_collected * MINER_WEIGHT_PERCENTAGE
+        general_pool_epoch_fees = current_epoch_fees_collected * GENERAL_POOL_WEIGHT_PERCENTAGE
+
+        # Calculate the max budget for each pool based on our constants. This is the max budget for the pool for the epoch.
+        max_current_epoch_budget = current_epoch_budget * MAX_EPOCH_BUDGET_PERCENTAGE_FOR_BOOST
+        miner_pool_epoch_max_budget = max_current_epoch_budget * MINER_WEIGHT_PERCENTAGE
+
+        # If max epoch budgets are greater than our fees, set the fees to the max budget. This gives more weights (and in turn, more incentives) to the miners when we aren't using the full budget.
+        miner_pool_max_budget_weighted = miner_pool_epoch_fees
+        if miner_pool_epoch_max_budget > miner_pool_epoch_fees:
+            miner_pool_max_budget_weighted = miner_pool_epoch_max_budget
+            #bt.logging.info(f"Miner pool max budget weighted is greater than fees ({miner_pool_epoch_fees:,.2f}). Setting to {miner_pool_epoch_max_budget:,.2f} ({MAX_EPOCH_BUDGET_PERCENTAGE_FOR_BOOST * 100:.2f}% boost)")
+            print(f"Miner pool max budget is greater than fees ({miner_pool_epoch_fees:,.2f}). Setting to {miner_pool_epoch_max_budget:,.2f} ({MAX_EPOCH_BUDGET_PERCENTAGE_FOR_BOOST * 100:.2f}% boost)")
+
+        # Calculate the subnet budget for each pool based on our constants. This is the total budget for the subnet for the epoch.
+        miner_pool_epoch_budget = current_epoch_budget * MINER_WEIGHT_PERCENTAGE
+        general_pool_epoch_budget = current_epoch_budget * GENERAL_POOL_WEIGHT_PERCENTAGE
+        
+    else:
+        # Use the fees collected for each pool directly, which acts as dynamic weighting.
+        miner_pool_epoch_budget = miner_fees
+        general_pool_epoch_budget = gp_fees
+
+        # Calculate the max budget for the miner pool based on our constants. This is the max budget for the pool for the epoch.
+        miner_pool_max_budget_weighted = miner_pool_epoch_budget
+        if MINER_POOL_BUDGET_BOOST_PERCENTAGE > 0:
+            miner_pool_max_budget_weighted = miner_pool_epoch_budget * (1 + MINER_POOL_BUDGET_BOOST_PERCENTAGE)
+            if miner_pool_max_budget_weighted + general_pool_epoch_budget > current_epoch_budget:
+                miner_pool_max_budget_weighted = miner_pool_epoch_budget
+                #bt.logging.info(f"Miner pool budget boost would exceed total budget. Using regular budget instead.\n")
+                print(f"Miner pool budget boost would exceed total budget. Using regular budget instead.\n")
+            else:
+                #bt.logging.info(f"Miner pool budget boost would not exceed total budget. Using boosted budget of {miner_pool_max_budget_weighted:,.2f} (+{MINER_POOL_BUDGET_BOOST_PERCENTAGE * 100:.2f}%)\n")
+                print(f"Miner pool budget boost would not exceed total budget. Using boosted budget of {miner_pool_max_budget_weighted:,.2f} (+{MINER_POOL_BUDGET_BOOST_PERCENTAGE * 100:.2f}%)\n")
+        
 
     # Calculate the miner pool scores using epoch-based history
     miners_scores = score_with_epochs(
         epoch_history=miner_history,
         budget=miner_pool_epoch_budget,
-        max_fees_weighted=miner_pool_epoch_fees,
+        max_budget_weighted=miner_pool_max_budget_weighted,
         roi_min=ROI_MIN,
         volume_min=VOLUME_MIN,
         require_epoch_preds=False,
@@ -197,7 +246,7 @@ def score_miners(
     general_pool_scores = score_with_epochs(
         epoch_history=general_pool_history,
         budget=general_pool_epoch_budget,
-        max_fees_weighted=general_pool_epoch_fees,
+        max_budget_weighted=None, # General pool is not eligible for the max budget boost.
         roi_min=ROI_MIN,
         volume_min=VOLUME_MIN,
         require_epoch_preds=True,
@@ -254,15 +303,15 @@ def build_epoch_history(
         if trade["account_id"] is None:
             continue
         
-        # Skip if the trade is not settled
-        if not trade["is_settled"]:
+        # Skip if the trade is not completed
+        if not trade["is_completed"]:
             continue
             
         # Parse date
-        date_settled = trade["date_settled"]
-        if isinstance(date_settled, str):
-            date_settled = datetime.fromisoformat(date_settled.replace('Z', '+00:00'))
-        trade_date = date_settled.date()
+        date_completed = trade["completed_at"]
+        if isinstance(date_completed, str):
+            date_completed = datetime.fromisoformat(date_completed.replace('Z', '+00:00'))
+        trade_date = date_completed.date()
         
         # Find epoch index
         if trade_date < epoch_dates[0] or trade_date >= today.date():
@@ -330,16 +379,19 @@ def build_epoch_history(
             is_correct = trade["is_correct"]
             is_reward_eligible = trade["is_reward_eligible"]
             
-            # Calculate metrics (matching simulate_epochs.py logic)
-            fee = volume * VOLUME_FEE
+            # Calculate metrics
+            #fee = volume * VOLUME_FEE
+            fee = trade["actual_fees"] if trade["actual_fees"] is not None else 0.0
+
             # Always collect fees for all trades, even if the trade is not reward eligible
             fees_prev[epoch_idx, col_idx] += fee
             
-            if is_reward_eligible:
+            if is_reward_eligible and fee > 0:
                 volume_prev[epoch_idx, col_idx] += volume
                 if is_correct:
-                    # Winning trade: qualified volume (after fee deduction) -- @TODO: verify with Stephen
-                    qualified = volume * (1.0 - VOLUME_FEE)
+                    # Winning trade: qualified volume (after fee deduction)
+                    #qualified = volume * (1.0 - VOLUME_FEE)
+                    qualified = volume - fee
                     qualified_prev[epoch_idx, col_idx] += qualified
                     correct_trade_counts[epoch_idx, col_idx] += 1
                 else:
@@ -392,13 +444,6 @@ def check_build_up_eligibility(epoch_history: Dict[str, Any]) -> np.ndarray:
         if total_trades < MIN_PREDICTIONS_FOR_ELIGIBILITY:
             eligible[entity_idx] = False
             continue
-            
-        # Check minimum active epochs requirement
-        # An "active epoch" is one where the entity had volume > 0
-        active_epochs = np.sum(volume_prev[:, entity_idx] > 0)
-        if active_epochs < MIN_ACTIVE_EPOCHS:
-            eligible[entity_idx] = False
-            continue
     
     return eligible
 
@@ -407,7 +452,7 @@ def score_with_epochs(
     budget: float,
     roi_min: float,
     volume_min: float,
-    max_fees_weighted: float,
+    max_budget_weighted: float,
     require_epoch_preds: bool = False,
     verbose: bool = True
 ):
@@ -467,7 +512,6 @@ def score_with_epochs(
         print(f"Build-up eligibility: {n_build_up_eligible}/{n_entities} entities meet build-up requirements")
         print(f"  - MIN_EPOCHS_FOR_ELIGIBILITY: {MIN_EPOCHS_FOR_ELIGIBILITY}")
         print(f"  - MIN_TRADES_FOR_ELIGIBILITY: {MIN_PREDICTIONS_FOR_ELIGIBILITY}")
-        print(f"  - MIN_ACTIVE_EPOCHS: {MIN_ACTIVE_EPOCHS}")
     
     # Combine all eligibility requirements
     qual_mask = (
@@ -520,28 +564,28 @@ def score_with_epochs(
     A dictionary that contains the critial data for the solvers
     """
     p_dict = {
-        "budget": budget,                          # alotted budget
-        "max_fees_weighted": max_fees_weighted,    # max fees weighted
-        "total_volume": np.sum(total_volume),      # all trailing volume
-        "total_q_volume": np.sum(qual_volume),     # all trailing volume
-        "v_prev": qualified_prev_matrix,           # qualified volume array
-        "v_block": current_epoch_volume,           # total qualified vol this epoch
-        "v_memory": v_memory,                      # decaying volume
-        "v_eff": v_eff,                            # History respecting volume
-        "v_qual": qual_volume,                     # qualified volume
-        "block_v_qual": qual_volume,               # block qualified volume
-        "roi_trailing": roi_trailing,              # trailing roi
-        "roi_block": current_epoch_roi,            # block roi array
-        "roi_qual": qual_volume,                   # qualified volume
-        "block_roi_qual": qual_volume,             # block qualified volume
-        "epoch_history": epoch_history,            # epoch history for build-up checks
+        "budget": budget,                           # alotted budget
+        "max_budget_weighted": max_budget_weighted, # max budget weighted
+        "total_volume": np.sum(total_volume),       # all trailing volume
+        "total_q_volume": np.sum(qual_volume),      # all trailing volume
+        "v_prev": qualified_prev_matrix,            # qualified volume array
+        "v_block": current_epoch_volume,            # total qualified vol this epoch
+        "v_memory": v_memory,                       # decaying volume
+        "v_eff": v_eff,                             # History respecting volume
+        "v_qual": qual_volume,                      # qualified volume
+        "block_v_qual": qual_volume,                # block qualified volume
+        "roi_trailing": roi_trailing,               # trailing roi
+        "roi_block": current_epoch_roi,             # block roi array
+        "roi_qual": qual_volume,                    # qualified volume
+        "block_roi_qual": qual_volume,              # block qualified volume
+        "epoch_history": epoch_history,             # epoch history for build-up checks
         # --- CONSTRAINT SETTINGS ---
-        "roi_min": roi_min,                        # minimum roi constraint
-        "v_min": volume_min,                       # minimum volume constraint
-        "x_prev": x_prev,                          # allocations this epoch. @TODO: verify with Stephen (currently not in use)
-        "kappa_bar": kappa_bar,                    # payout rate
-        "ramp": RAMP,                              # allocation delta rate
-        "rho_cap": RHO_CAP,                        # max allocation per miner
+        "roi_min": roi_min,                         # minimum roi constraint
+        "v_min": volume_min,                        # minimum volume constraint
+        "x_prev": x_prev,                           # allocations this epoch. @TODO: verify with Stephen (currently not in use)
+        "kappa_bar": kappa_bar,                     # payout rate
+        "ramp": RAMP,                               # allocation delta rate
+        "rho_cap": RHO_CAP,                         # max allocation per miner
         "require_epoch_preds": require_epoch_preds  # require current epoch predictions toggle
     }
     
@@ -830,7 +874,7 @@ def solve_phase2(p, x1, T1, verbose=False):
     v_eff        = p["v_eff"]
     roi          = p["roi_trailing"]
     B            = p["budget"]
-    max_fees     = p.get("max_fees_weighted", B) # default to budget if not provided
+    max_budget = p.get("max_budget_weighted", B) if p.get("max_budget_weighted") is not None else B # default max_budget to budget if not provided
     kappa        = p["kappa_bar"]
 
     # Token cost per miner if fully opened
@@ -878,7 +922,7 @@ def solve_phase2(p, x1, T1, verbose=False):
     cons = []
     cons += [x >= 0, x <= 1]
     cons += [x <= eligible]                 # eligibility
-    cons += [c @ x <= min(P1, B, max_fees)] # fixed total payout (ensured not greater than budget or max fees weighted)
+    cons += [c @ x <= min(P1, B, max_budget)] # fixed total payout (ensured not greater than budget or max budget weighted)
 
     # Objective: favor ROI while staying close to prior gates
     # dynamic smoothness penalty λ
@@ -909,7 +953,7 @@ def solve_phase2(p, x1, T1, verbose=False):
         "status": prob.status,
         "x_star": None if x.value is None else x.value.copy(),
         "c_star": c,
-        "payout": min(P1, B, max_fees), # ensure payout is not greater than budget or max fees weighted
+        "payout": min(P1, B, max_budget), # ensure payout is not greater than budget or max budget weighted
     }
 
 """
@@ -961,14 +1005,16 @@ def compute_joint_kappa_from_history(epoch_history: Dict[str, Any], lookback=ROL
 def print_pool_stats(miner_history, general_pool_history, include_current_epoch=False, miner_scores=None, general_pool_scores=None):
     """Print historical stats for both pools."""
 
-    headers = ["Rank", "PID", "# Epochs", "Preds", "Total Vol", "Qualified Vol", "PNL", "ROI"]
+    headers = ["Rank", "PID", "# Epochs", "Preds", "Total Vol", "Qual Vol", "PNL", "ROI"]
     if include_current_epoch:
-        headers.append("Epoch Preds")
-        headers.append("Epoch Vol")
-        headers.append("Epoch Qual. Vol")
-        headers.append("Epoch PNL")
-        headers.append("Epoch ROI")
-        headers.append("Epoch Earnings")
+        headers.append("Ep. Preds")
+        headers.append("Ep. Vol")
+        headers.append("Ep. Qual Vol")
+        headers.append("Ep. PNL")
+        headers.append("Ep. ROI")
+        headers.append("Ep. Earnings")
+        headers.append("Ep. Earnings/PnL")
+        headers.append("Ep. Earnings/Vol")
     
     # Analyze miner pool
     if miner_history['n_entities'] > 0:
@@ -1052,6 +1098,16 @@ def create_pool_stats_table(epoch_history, pool_type, include_current_epoch=Fals
                 if score_entity_id == entity_id:
                     earnings = scores['tokens'][i] if scores['tokens'][i] > 0 else 0
                     break
+
+        # Calculate the % of earnings of their PnL
+        earnings_percentage = 0.0
+        if earnings > 0:
+            earnings_percentage = earnings / total_pnl
+
+        # Calculate the % of earnings to their current epoch volume
+        earnings_percentage_to_volume = 0.0
+        if epoch_volume > 0:
+            earnings_percentage_to_volume = earnings / epoch_volume
         
         # Format entity ID based on pool type
         if pool_type == "Miner":
@@ -1067,7 +1123,7 @@ def create_pool_stats_table(epoch_history, pool_type, include_current_epoch=Fals
             f"${total_volume:,.0f}",
             f"${qualified_volume:,.0f}",
             f"${total_pnl:,.2f}",
-            f"{roi:.4f}"
+            f"{roi:.4f}",
         ]
         
         # Add current epoch columns if requested
@@ -1078,7 +1134,9 @@ def create_pool_stats_table(epoch_history, pool_type, include_current_epoch=Fals
                 f"${epoch_qualified_volume:,.0f}",
                 f"${epoch_pnl:,.2f}",
                 f"{epoch_roi:.4f}",
-                f"{earnings:.2f}"
+                f"{earnings:.2f}",
+                f"{earnings_percentage:.4f}",
+                f"{earnings_percentage_to_volume:.4f}",
             ])
         
         table_data.append(row_data)
@@ -1087,7 +1145,7 @@ def create_pool_stats_table(epoch_history, pool_type, include_current_epoch=Fals
     if scores is not None and 'tokens' in scores:
         # Sort by earnings (last column when include_current_epoch=True)
         if include_current_epoch:
-            table_data.sort(key=lambda x: float(x[-1]), reverse=True)  # Sort by Earnings (last column)
+            table_data.sort(key=lambda x: float(x[-3]), reverse=True)  # Sort by Earnings
         else:
             # If no current epoch data but we have scores, we need to get earnings differently
             # For now, fall back to PnL sorting
@@ -1149,24 +1207,43 @@ def calculate_weights(miners_scores: Dict[str, Any], general_pool_scores: Dict[s
     #bt.logging.info(f"Miner pool total epoch units: {total_miner_pool_tokens:,.2f}")
     print(f"Miner pool total epoch units: {total_miner_pool_tokens:,.2f}")
 
-    # Step 2: Calculate general pool total weight and assign to BURN_UID. It is always GENERAL_POOL_WEIGHT_PERCENTAGE of the total epoch budget.
+    # Step 2: Calculate general pool total weight and assign to BURN_UID.
     total_general_pool_tokens = np.sum(general_pool_tokens_allocated)
-    general_pool_weight = (GENERAL_POOL_WEIGHT_PERCENTAGE * total_epoch_budget) / total_epoch_budget
-    miner_weights[BURN_UID] = general_pool_weight
     #bt.logging.info(f"General pool total epoch units: {total_general_pool_tokens:,.2f}")
-    #bt.logging.info(f"General pool BURN_UID weight: {general_pool_weight:.4f} (always {GENERAL_POOL_WEIGHT_PERCENTAGE * 100:.2f}% of total epoch budget)")
     print(f"General pool total epoch units: {total_general_pool_tokens:,.2f}")
-    print(f"General pool BURN_UID weight: {general_pool_weight:.4f} (always {GENERAL_POOL_WEIGHT_PERCENTAGE * 100:.2f}% of total epoch budget)")
+    if ENABLE_STATIC_WEIGHTING:
+        # If static weighting is enabled, the general pool weight is always GENERAL_POOL_WEIGHT_PERCENTAGE of the total epoch budget.
+        general_pool_weight = GENERAL_POOL_WEIGHT_PERCENTAGE * total_epoch_budget
+        #bt.logging.info(f"General pool BURN_UID weight: {general_pool_weight:.4f} (static weighting: always {GENERAL_POOL_WEIGHT_PERCENTAGE * 100:.2f}% of total epoch budget)")
+        print(f"General pool BURN_UID weight: {general_pool_weight:.4f} (static weighting: always {GENERAL_POOL_WEIGHT_PERCENTAGE * 100:.2f}% of total epoch budget)")
+    else:
+        # If dynamic weighting is enabled, the general pool weight is the percentage of the total epoch budget that the general pool tokens represent.
+        general_pool_weight = (total_general_pool_tokens / total_epoch_budget)
+        #bt.logging.info(f"General pool BURN_UID weight: {general_pool_weight:.4f} (dynamic weighting: {total_general_pool_tokens:,.2f} / {total_epoch_budget:,.2f})")
+        print(f"General pool BURN_UID weight: {general_pool_weight:.4f} (dynamic weighting: {total_general_pool_tokens:,.2f} / {total_epoch_budget:,.2f})")
+    miner_weights[BURN_UID] = general_pool_weight
 
     # Step 3: Calculate total allocated weight and excess
     total_allocated_weight = sum(miner_weights.values())
     excess_weight = 1.0 - total_allocated_weight
+    #bt.logging.info(f"Subtotal allocated weight: {total_allocated_weight:.4f}")
+    print(f"Subtotal allocated weight: {total_allocated_weight:.4f} (({total_miner_pool_tokens:,.2f} + {total_general_pool_tokens:,.2f}) / {total_epoch_budget:,.2f})")
+
+    # If we have excess weight and the miner pool weight boost percentage is greater than 0, we will boost the miner pool weights by the percentage.
+    if excess_weight > 0 and MINER_POOL_WEIGHT_BOOST_PERCENTAGE > 0:
+        # Boost the miner pool weights by the percentage
+        miner_weights = {uid: weight * (1 + MINER_POOL_WEIGHT_BOOST_PERCENTAGE) for uid, weight in miner_weights.items()}
+        #bt.logging.info(f"Boosted miner pool weights by {MINER_POOL_WEIGHT_BOOST_PERCENTAGE * 100:.2f}%")
+        print(f"Boosted miner pool weights by {MINER_POOL_WEIGHT_BOOST_PERCENTAGE * 100:.2f}%")
+        # Recalculate the total allocated weight and excess weight
+        total_allocated_weight = sum(miner_weights.values())
+        excess_weight = 1.0 - total_allocated_weight
     
     # Assign excess weight to EXCESS_MINER_WEIGHT_UID, but ensure it is at least EXCESS_MINER_MIN_WEIGHT
     miner_weights[EXCESS_MINER_WEIGHT_UID] = max(excess_weight, EXCESS_MINER_MIN_WEIGHT)
     
     #bt.logging.info(f"Total allocated weight: {total_allocated_weight:.4f}")
-    print(f"Total allocated weight: {total_allocated_weight:.4f} (({total_miner_pool_tokens:,.2f} + {total_general_pool_tokens:,.2f}) / {total_epoch_budget:,.2f})")
+    print(f"Total allocated weight: {total_allocated_weight:.4f}")
     #bt.logging.info(f"Excess weight assigned to EXCESS_MINER_WEIGHT_UID: {miner_weights[EXCESS_MINER_WEIGHT_UID]:.4f}")
     print(f"Excess weight assigned to EXCESS_MINER_WEIGHT_UID: {miner_weights[EXCESS_MINER_WEIGHT_UID]:.4f}")
 

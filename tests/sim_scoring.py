@@ -8,13 +8,16 @@ This script:
 4. Prints results and diagnostics
 """
 
+import os
 import json
 import sys
+import time
 from pathlib import Path
 from datetime import datetime
 import requests
 import numpy as np
 from tabulate import tabulate
+import argparse
 
 # Add parent directory to path so we can import scoring
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -93,8 +96,8 @@ def calculate_historical_payouts(miner_history, general_pool_history, all_uids, 
             # This simulates what data would have been available for scoring on that day
             epoch_trades = []
             for trade in trading_history:
-                if trade.get("is_settled", False):
-                    trade_date_str = trade.get("date_settled")
+                if trade.get("is_completed", False):
+                    trade_date_str = trade.get("completed_at")
                     if trade_date_str:
                         # Convert both dates to strings for comparison since epoch_date is a string
                         if isinstance(trade_date_str, str):
@@ -462,6 +465,18 @@ def fetch_tao_price():
 
 def main():
     """Main simulation function."""
+
+    """ Bittensor logging setup if needed
+    parser = argparse.ArgumentParser()
+    bt.logging.add_args(parser)
+    config = bt.config(parser)
+    # Set up logging directory.
+    config.full_path = 'sims/logs/'
+    # Ensure the logging directory exists (like validator.py does)
+    os.makedirs(config.full_path, exist_ok=True)
+    bt.logging(config=config, logging_dir=config.full_path)
+    """
+
     print("Loading mock trading data...")
     
     # Load the mock data
@@ -498,7 +513,8 @@ def main():
             all_uids=all_uids,
             all_hotkeys=all_hotkeys,
             trading_history=trading_history,
-            current_epoch_budget=current_epoch_budget
+            current_epoch_budget=current_epoch_budget,
+            verbose=True,
         )
     
     # Calculate historical payouts for all epochs
