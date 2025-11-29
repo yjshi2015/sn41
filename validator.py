@@ -34,12 +34,12 @@ class Validator:
         #self.moving_avg_scores = [1.0] * len(self.metagraph.S)
         #self.alpha = 0.1
 
-        self.trading_history_endpoint = "https://almanac.market/api/v1/trading/trading-history"
+        self.trading_history_endpoint = "https://api.almanac.market/api/v1/trading/trading-history"
         if self.config.subtensor.network == "test":
-            self.trading_history_endpoint = "https://test.almanac.market/api/v1/trading/trading-history"
+            self.trading_history_endpoint = "https://test-api.almanac.market/api/v1/trading/trading-history"
             #self.trading_history_endpoint = "http://localhost:3001/api/v1/trading/trading-history"
         self.rolling_history_in_days = ROLLING_HISTORY_IN_DAYS
-
+        self.trading_history_batch_limit = 1000
         # Set up auto update.
         self.last_update_check = datetime.datetime.now()
         self.update_check_interval = 60 * 60 * 24  # 24 hours
@@ -275,30 +275,74 @@ class Validator:
                 return trading_history
 
             else:
-                bt.logging.info(f"Fetching trading history from {self.trading_history_endpoint} for {self.rolling_history_in_days} days")        
-                url = f"{self.trading_history_endpoint}?days={self.rolling_history_in_days}"
+                bt.logging.info(f"Fetching trading history from {self.trading_history_endpoint} for {self.rolling_history_in_days} days")
                 
                 keypair = self.dendrite.keypair
                 hotkey = keypair.ss58_address
                 signature = f"0x{keypair.sign(hotkey).hex()}"
-
-                response = requests.get(
-                    url, 
-                    auth=HTTPBasicAuth(hotkey, signature),
-                    timeout=10
-                )
-                response.raise_for_status()
-                api_response = response.json()
                 
-                # Extract the data field from the API response
-                # API returns: {"success": true, "data": [...], "meta": {...}, "timestamp": "..."}
-                if isinstance(api_response, dict) and "data" in api_response:
-                    trading_history = api_response["data"]
-                    if not isinstance(trading_history, list):
-                        raise ValueError(f"Expected 'data' field to be a list, got {type(trading_history)}")
-                    return trading_history
-                else:
-                    raise ValueError(f"Unexpected API response format: {type(api_response)}. Expected dict with 'data' field.")
+                # Function to fetch a single batch with offset
+                def _fetch_batch(offset: Optional[int] = None):
+                    url = f"{self.trading_history_endpoint}?days={self.rolling_history_in_days}&limit={self.trading_history_batch_limit}"
+                    if offset is not None:
+                        url += f"&offset={offset}"
+                    
+                    response = requests.get(
+                        url, 
+                        auth=HTTPBasicAuth(hotkey, signature),
+                        timeout=10
+                    )
+                    response.raise_for_status()
+                    api_response = response.json()
+                    
+                    # Validate response structure
+                    if not isinstance(api_response, dict) or "data" not in api_response:
+                        raise ValueError(f"Unexpected API response format: {type(api_response)}. Expected dict with 'data' field.")
+                    
+                    trading_history_batch = api_response["data"]
+                    if not isinstance(trading_history_batch, list):
+                        raise ValueError(f"Expected 'data' field to be a list, got {type(trading_history_batch)}")
+                    
+                    # Extract pagination info
+                    meta = api_response.get("meta", {})
+                    pagination = meta.get("pagination", {})
+                    has_more = pagination.get("has_more", False)
+                    next_offset = pagination.get("next_offset")
+                    
+                    return trading_history_batch, has_more, next_offset
+                
+                # Fetch all batches with pagination
+                all_trading_history = []
+                offset = None
+                batch_num = 1
+                
+                while True:
+                    bt.logging.info(f"Fetching trading history batch {batch_num} (offset={offset})")
+                    
+                    # Fetch batch with retry logic
+                    trading_history_batch, has_more, next_offset = self._retry_with_backoff(_fetch_batch, offset)
+                    
+                    if not trading_history_batch:
+                        bt.logging.warning(f"Empty batch received at offset {offset}")
+                        break
+                    
+                    all_trading_history.extend(trading_history_batch)
+                    bt.logging.info(f"Batch {batch_num}: fetched {len(trading_history_batch)} trades (total so far: {len(all_trading_history)})")
+                    
+                    # Check if there are more pages
+                    if not has_more:
+                        bt.logging.info(f"Finished fetching all trading history. Total trades: {len(all_trading_history)}")
+                        break
+                    
+                    # Update offset for next batch
+                    if next_offset is None:
+                        bt.logging.warning("has_more is True but next_offset is None. Stopping pagination.")
+                        break
+                    
+                    offset = next_offset
+                    batch_num += 1
+                
+                return all_trading_history
         
         return self._retry_with_backoff(_fetch)
 
