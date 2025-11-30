@@ -27,12 +27,12 @@
 - [Community](#community)
 - [License](#license)
 
-## Introduction (@TODO: update this section)
+## Introduction
 
 Sportstensor is revolutionizing sports prediction through the world's first decentralized network for predictive intelligence. We harness the collective power of global AI talent to create prediction systems that consistently outperform traditional approaches. We've built a competitive ecosystem where independent AI developers and machine learning engineers deploy their predictive models. These models compete by submitting predictions that are scored against real-world outcomes, with rewards flowing directly to the most successful contributors.
 
 
-## Why is this important? (@TODO: update this section)
+## Why is this important? 
 Prediction markets are powerful but raw volume doesn’t always mean good information.
 Sportstensor fixes this by:
 
