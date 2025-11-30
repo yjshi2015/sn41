@@ -113,12 +113,14 @@ You must have a Bittensor wallet and a registered UID on the subnet.
 
 #### Almanac and Polymarket Setup
 1. Go to **https://almanac.market**  
-2. Create an account  
+2. Create an account
+    - Deploy safe wallet
+    - Sign all approvals
+    - Fund your safe wallet
 3. Connect your Bittensor coldkey:  
    - Install the Bittensor wallet extension  
    - Import the coldkey tied to your miner UID  
-   - Link wallet in Almanac settings  
-4. Connect Polymarket credentials (via Settings)
+   - Link wallet in Almanac settings
 
 #### Miner Metadata Registration
 1. Clone the repository:
@@ -140,6 +142,8 @@ python miner.py
 
 Once linked, miners can trade directly on **https://almanac.market**.  
 Validators automatically detect trades, compute scores, and distribute emissions.
+
+*Note: Miners trading directly on the app don't need to connect their Bittensor wallet after initially linking account.
 
 ---
 
