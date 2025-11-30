@@ -2,22 +2,22 @@
 <div align="center">
 
 ```
-                   $$$$$$\  $$\       $$\      $$\  $$$$$$\  $$\   $$\  $$$$$$\   $$$$$$\  
-                  $$  __$$\ $$ |      $$$\    $$$ |$$  __$$\ $$$\  $$ |$$  __$$\ $$  __$$\ 
-                  $$ /  $$ |$$ |      $$$$\  $$$$ |$$ /  $$ |$$$$\ $$ |$$ /  $$ |$$ /  \__|
-                  $$$$$$$$ |$$ |      $$\$$\$$ $$ |$$$$$$$$ |$$ $$\$$ |$$$$$$$$ |$$ |      
-                  $$  __$$ |$$ |      $$ \$$$  $$ |$$  __$$ |$$ \$$$$ |$$  __$$ |$$ |      
-                  $$ |  $$ |$$ |      $$ |\$  /$$ |$$ |  $$ |$$ |\$$$ |$$ |  $$ |$$ |  $$\ 
-                  $$ |  $$ |$$$$$$$$\ $$ | \_/ $$ |$$ |  $$ |$$ | \$$ |$$ |  $$ |\$$$$$$  |
-                  \__|  \__|\________|\__|     \__|\__|  \__|\__|  \__|\__|  \__| \______/ 
-```
-
-# The future of prediction algorithms
+   SPORTSTENSOR PRESENTS
+--------------------------------------------------------------------------------------------------
+   █████████   █████       ██████   ██████   █████████   ██████   █████   █████████     █████████ 
+  ███▒▒▒▒▒███ ▒▒███       ▒▒██████ ██████   ███▒▒▒▒▒███ ▒▒██████ ▒▒███   ███▒▒▒▒▒███   ███▒▒▒▒▒███
+ ▒███    ▒███  ▒███        ▒███▒█████▒███  ▒███    ▒███  ▒███▒███ ▒███  ▒███    ▒███  ███     ▒▒▒ 
+ ▒███████████  ▒███        ▒███▒▒███ ▒███  ▒███████████  ▒███▒▒███▒███  ▒███████████ ▒███         
+ ▒███▒▒▒▒▒███  ▒███        ▒███ ▒▒▒  ▒███  ▒███▒▒▒▒▒███  ▒███ ▒▒██████  ▒███▒▒▒▒▒███ ▒███         
+ ▒███    ▒███  ▒███      █ ▒███      ▒███  ▒███    ▒███  ▒███  ▒▒█████  ▒███    ▒███ ▒▒███     ███
+ █████   █████ ███████████ █████     █████ █████   █████ █████  ▒▒█████ █████   █████ ▒▒█████████ 
+▒▒▒▒▒   ▒▒▒▒▒ ▒▒▒▒▒▒▒▒▒▒▒ ▒▒▒▒▒     ▒▒▒▒▒ ▒▒▒▒▒   ▒▒▒▒▒ ▒▒▒▒▒    ▒▒▒▒▒ ▒▒▒▒▒   ▒▒▒▒▒   ▒▒▒▒▒▒▒▒▒  
+```                                                                                                                                         
 
 </div>
 
 - [Introduction](#introduction)
-- [Why is this important?](#why-is-this-important)
+- [How it Works](#how-it-works)
 - [Miner and Validator Functionality](#miner-and-validator-functionality)
   - [Miner](#miner)
   - [Validator](#validator)
@@ -29,40 +29,62 @@
 
 ## Introduction
 
-Sportstensor is revolutionizing sports prediction through the world's first decentralized network for predictive intelligence. We harness the collective power of global AI talent to create prediction systems that consistently outperform traditional approaches. We've built a competitive ecosystem where independent AI developers and machine learning engineers deploy their predictive models. These models compete by submitting predictions that are scored against real-world outcomes, with rewards flowing directly to the most successful contributors.
+Sportstensor operates the world's first decentralized competition network for sports prediction. We connect global AI talent in a competitive ecosystem where independent developers deploy predictive models, compete against real-world outcomes, and earn rewards based on accuracy.
 
+Almanac is the front end to Sportstensor, a prediction market interface that makes competing and submitting predictions by trading simpler and much more accessible.
 
-## Why is this important? 
-Prediction markets are powerful but raw volume doesn’t always mean good information.
-Sportstensor fixes this by:
+## How It Works 
+We implement a two-phase optimization system that rewards miners based on 
+their historical trading performance. The mechanism distributes a fixed budget among eligible 
+participants, prioritizing those who demonstrate consistent profitability and trading volume.
 
-- Rewarding traders for real informational value, not just profit.
-- Identifying high-signal participants and routing more flow toward them.
-- Improving market accuracy through continuous feedback and scoring.
-- Aligning incentives between traders, liquidity, and the broader ecosystem.
-- Unlocking a new meta-game, where skilled forecasters can earn daily rewards on top of Polymarket PnL.
+The system tracks trading activity over a rolling 30-day window, organizing trades into daily 
+epochs. For each epoch, it:
+
+1. Calculates Performance Metrics:
+   - ROI (Return on Investment): Profit divided by trading volume
+   - Qualified Volume: Volume from winning trades (after fees)
+   - Trailing Performance: Historical performance across all epochs
+
+2. Applies Eligibility Gates:
+   - Minimum ROI threshold (prevents rewarding unprofitable traders)
+   - Minimum volume requirement (ensures meaningful participation)
+   - Build-up period: Traders must demonstrate consistent activity over multiple epochs
+
+3. Runs Two-Phase Optimization:
+   Phase 1: Maximizes the total qualified volume that can be funded within budget constraints
+   Phase 2: Redistributes payouts to favor higher-ROI traders while maintaining volume targets
+
+4. Allocates Tokens:
+   - Converts optimized scores into token weights
+   - Distributes rewards proportionally based on funded volume and signal strength (ROI)
+   - Enforces diversity caps to prevent any single trader from dominating
+
+### Key Features
+- Dual Pool System: Separate scoring for registered miners vs. general pool traders
+- Volume Decay: Recent activity weighted more heavily than older trades
+- Smooth Transitions: Ramp constraints prevent sudden allocation changes
+- Budget Management: Ensures total payouts never exceed available budget
+- Performance Gating: Only profitable, active traders receive rewards
+
+The system is designed to incentivize high-quality trading signals while maintaining fairness 
+and preventing gaming through volume requirements and historical performance tracking.
 
 ## Miner and Validator Functionality
 
 ### Miner
 
-- Miners generate **informative probability signals** by trading on Almanac, which routes Polymarket CLOB orders through the miner’s proxy wallet.  
-- Every trade becomes a scored prediction within the **Almanac Scoring Engine**, which evaluates accuracy, ROI, timing, and informational value.  
+- Miners generate **information signals** by trading on Almanac, which routes Polymarket CLOB orders through the miner’s proxy wallet.  
+- Every trade becomes a scored prediction within the **incentive mechanism**, which evaluates accuracy, ROI, timing, and informational value.  
 - Miners may use **manual strategies, models, or automated systems**—the scoring is model-agnostic and purely performance-based.  
-- High-signal miners earn the largest share of **daily Alpha Token emissions** based on:  
-  - Truthful Flow contribution  
-  - Informational Efficiency  
-  - Volume-adjusted consistency  
-  - Historical performance (with decaying memory)
+- High-signal miners earn the largest share of **daily Alpha Token emissions**.
 
 ### Validator
 
 - **Metadata Syncing**: Validators continuously sync miner metadata from chain (wallets, proxy addresses, UIDs).  
 - **Data Ingestion**: At each epoch, the validator pulls miner trading history from Almanac’s backend (rolling window).  
-- **Scoring**: The validator runs the **dual-phase scoring pipeline**:  
-  - **Phase 1 — Truthful Flow**: Measures how much quality volume a miner drives.  
-  - **Phase 2 — Informational Efficiency**: Adjusts rewards based on ROI consistency and predictive value.  
-- **Weight Setting**: After generating scores, validators set miner weights on-chain, determining TAO emissions for the next epoch.
+- **Scoring**: The validator runs the **two-phase scoring mechanism**.
+- **Weight Setting**: After generating scores, validators set miner weights on-chain, determining Alpha Token emissions for the next epoch.
 
 ### Scoring and Weights
 
@@ -96,7 +118,7 @@ You must have a Bittensor wallet and a registered UID on the subnet.
    - Install the Bittensor wallet extension  
    - Import the coldkey tied to your miner UID  
    - Link wallet in Almanac settings  
-4. Connect Polymarket credentials (via Trading Settings)
+4. Connect Polymarket credentials (via Settings)
 
 #### Miner Metadata Registration
 1. Clone the repository:
