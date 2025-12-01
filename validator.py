@@ -36,8 +36,8 @@ class Validator:
 
         self.trading_history_endpoint = "https://api.almanac.market/api/v1/trading/trading-history"
         if self.config.subtensor.network == "test":
-            self.trading_history_endpoint = "https://test-api.almanac.market/api/v1/trading/trading-history"
-            #self.trading_history_endpoint = "http://localhost:3001/api/v1/trading/trading-history"
+            #self.trading_history_endpoint = "https://test-api.almanac.market/api/v1/trading/trading-history"
+            self.trading_history_endpoint = "http://localhost:3001/api/v1/trading/trading-history"
         self.rolling_history_in_days = ROLLING_HISTORY_IN_DAYS
         self.trading_history_batch_limit = 1000
         # Set up auto update.
@@ -226,8 +226,8 @@ class Validator:
         name = "validator-" + str(self.my_uid) + "-" + run_id
         self.wandb_run = wandb.init(
             name=name,
-            project="sn41-vali-logs",
-            entity="sn41",
+            project="sportstensor-vali-logs",
+            entity="sportstensor",
             config={
                 "uid": self.my_uid,
                 "hotkey": self.wallet.hotkey.ss58_address,
@@ -367,7 +367,7 @@ class Validator:
             try:
                 should_score_and_set_weights = False
                 # Score and set weights every hour on the hour
-                if minutes == 0:
+                if minutes == 48:
                     should_score_and_set_weights = True
 
                 # If metadata manager last full sync is more than 2 hours ago, skip scoring and setting weights
@@ -517,7 +517,7 @@ class Validator:
 # Run the validator.
 if __name__ == "__main__":
 
-    ascii_banner = """
+    ascii_banner = r"""
     
     ________________________________________________________________________
     
