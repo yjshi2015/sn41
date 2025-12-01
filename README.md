@@ -195,7 +195,7 @@ pip install -r requirements.txt
 ### Run Auto-Updating Validator with PM2 (recommended)
 
 ```bash 
-pm2 start vali_auto_update.sh --name sn41-validator -- \
+pm2 start validator_auto_update.sh --name sn41-validator -- \
     --netuid 41 \
     --wallet.name {wallet} \
     --wallet.hotkey {hotkey} \
