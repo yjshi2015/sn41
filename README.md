@@ -199,7 +199,6 @@ pm2 start vali_auto_update.sh --name sn41-validator -- \
     --netuid 41 \
     --wallet.name {wallet} \
     --wallet.hotkey {hotkey} \
-    --axon.port {port} \
     --logging.debug
 ```
 
@@ -211,7 +210,6 @@ pm2 start validator.py --name sn41-validator -- \
     --netuid 41 \
     --wallet.name {wallet} \
     --wallet.hotkey {hotkey} \
-    --axon.port {port} \
     --logging.debug
 ```
 

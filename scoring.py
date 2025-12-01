@@ -1224,19 +1224,25 @@ def calculate_weights(miners_scores: Dict[str, Any], general_pool_scores: Dict[s
 
     # Calculate the excess weight that is not burned.
     excess_weight = excess_weight * EXCESS_MINER_TAKE_PERCENTAGE
-    # Assign excess weight to EXCESS_MINER_WEIGHT_UID, but ensure it is at least EXCESS_MINER_MIN_WEIGHT
-    miner_weights[EXCESS_MINER_WEIGHT_UID] = max(excess_weight, EXCESS_MINER_MIN_WEIGHT)
-    
+    if EXCESS_MINER_WEIGHT_UID is not None:
+        # Assign excess weight to EXCESS_MINER_WEIGHT_UID, but ensure it is at least EXCESS_MINER_MIN_WEIGHT
+        miner_weights[EXCESS_MINER_WEIGHT_UID] = max(excess_weight, EXCESS_MINER_MIN_WEIGHT)
+
     #bt.logging.info(f"Total allocated weight: {total_allocated_weight:.4f} ({miner_pool_weights:,.4f} + {general_pool_weight:,.4f})")
     print(f"Total allocated weight: {total_allocated_weight:.4f} ({miner_pool_weights:,.4f} + {general_pool_weight:,.4f})")
-    #bt.logging.info(f"Excess weight assigned to EXCESS_MINER_WEIGHT_UID: {miner_weights[EXCESS_MINER_WEIGHT_UID]:.5f}")
-    print(f"Excess weight assigned to EXCESS_MINER_WEIGHT_UID: {miner_weights[EXCESS_MINER_WEIGHT_UID]:.5f} ({EXCESS_MINER_TAKE_PERCENTAGE * 100:.0f}% of excess weight)")
+    if EXCESS_MINER_WEIGHT_UID is not None:
+        #bt.logging.info(f"Excess weight assigned to EXCESS_MINER_WEIGHT_UID: {miner_weights[EXCESS_MINER_WEIGHT_UID]:.5f}")
+        print(f"Excess weight assigned to EXCESS_MINER_WEIGHT_UID: {miner_weights[EXCESS_MINER_WEIGHT_UID]:.5f} ({EXCESS_MINER_TAKE_PERCENTAGE * 100:.0f}% of excess weight)")
     #bt.logging.info(f"Excess weight assigned to BURN_UID: {(burn_weight - general_pool_weight):,.4f}")
     print(f"Excess weight assigned to BURN_UID: {(burn_weight - general_pool_weight):,.4f} ({(1 - EXCESS_MINER_TAKE_PERCENTAGE) * 100:.0f}% of excess weight)")
     #bt.logging.info(f"Burn weight assigned to BURN_UID: {miner_weights[BURN_UID]:.4f} ({general_pool_weight:,.4f} + {(burn_weight - general_pool_weight):,.4f})")
     print(f"Burn weight assigned to BURN_UID: {miner_weights[BURN_UID]:.4f} ({general_pool_weight:,.4f} + {(burn_weight - general_pool_weight):,.4f})")
-    #bt.logging.info(f"Final weights: {miner_pool_weights:,.4f} (miner pool) + {general_pool_weight:,.4f} (general pool) + {(burn_weight - general_pool_weight):,.4f} (burn) + {miner_weights[EXCESS_MINER_WEIGHT_UID]:,.5f} (excess) = {sum(miner_weights.values()):,.2f}")
-    print(f"Final weights: {miner_pool_weights:,.4f} (miner pool) + {general_pool_weight:,.4f} (general pool) + {(burn_weight - general_pool_weight):,.4f} (burn) + {miner_weights[EXCESS_MINER_WEIGHT_UID]:,.5f} (excess) == {sum(miner_weights.values()):,.2f}")
+    if EXCESS_MINER_WEIGHT_UID is not None:
+        #bt.logging.info(f"Final weights: {miner_pool_weights:,.4f} (miner pool) + {general_pool_weight:,.4f} (general pool) + {(burn_weight - general_pool_weight):,.4f} (burn) + {miner_weights[EXCESS_MINER_WEIGHT_UID]:,.5f} (excess) = {sum(miner_weights.values()):,.2f}")
+        print(f"Final weights: {miner_pool_weights:,.4f} (miner pool) + {general_pool_weight:,.4f} (general pool) + {(burn_weight - general_pool_weight):,.4f} (burn) + {miner_weights[EXCESS_MINER_WEIGHT_UID]:,.5f} (excess) == {sum(miner_weights.values()):,.2f}")
+    else:
+        #bt.logging.info(f"Final weights: {miner_pool_weights:,.4f} (miner pool) + {general_pool_weight:,.4f} (general pool) + {(burn_weight - general_pool_weight):,.4f} (burn) = {sum(miner_weights.values()):,.2f}")
+        print(f"Final weights: {miner_pool_weights:,.4f} (miner pool) + {general_pool_weight:,.4f} (general pool) + {(burn_weight - general_pool_weight):,.4f} (burn) == {sum(miner_weights.values()):,.2f}")
 
     # Step 4: Convert weight dictionary to array format for Bittensor
     # Create weights array matching the metagraph UIDs

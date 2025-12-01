@@ -555,7 +555,8 @@ def main():
     print(f"Total weight sum: {sum(weights):.6f}")
     print("-" * 80)
     for i, weight in enumerate(weights):
-        print(f"{all_uids[i]:<6} {weight:.6f}")
+        if i in all_uids:
+            print(f"{all_uids[i]:<6} {weight:.6f}")
     print("-" * 80)
 
 
