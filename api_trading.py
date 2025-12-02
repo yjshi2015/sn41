@@ -44,6 +44,7 @@ POLYMARKET_CLOB_HOST = "https://clob.polymarket.com"
 POLYGON_CHAIN_ID = 137
 # EIP-712 domain contract for Polymarket CTF Exchange
 EIP712_DOMAIN_CONTRACT = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
+EIP712_DOMAIN_NEGRISK_CONTRACT = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
 ENV_PATH = Path("api_trading.env")
 
 # Debug mode: if True, injects a static non-eligible market into search results for testing
@@ -252,6 +253,11 @@ def _place_order_now(market: dict, chosen_outcome_name: str | None = None, chose
         return
     
     market_title = market.get("title") or market.get("question") or market.get("name") or "Unknown Market"
+    # Extract neg_risk field (supports both snake_case and camelCase)
+    neg_risk = market.get("neg_risk") or market.get("negRisk") or False
+    if isinstance(neg_risk, str):
+        neg_risk = neg_risk.lower() in ("true", "1", "yes")
+    neg_risk = bool(neg_risk)
     
     print("\nPlace order (type 'c' at any prompt to cancel):")
     
@@ -322,6 +328,7 @@ def _place_order_now(market: dict, chosen_outcome_name: str | None = None, chose
     print(f"Market: {market_title}")
     if chosen_outcome_name:
         print(f"Outcome: {chosen_outcome_name}")
+    print(f"Neg Risk: {neg_risk}")
     print(f"Side: {side_upper}")
     print(f"Order Type: {order_type}")
     print(f"Size: {size}")
@@ -343,6 +350,7 @@ def _place_order_now(market: dict, chosen_outcome_name: str | None = None, chose
         side_upper=side_upper,
         size=size,
         price=price,
+        neg_risk=neg_risk,
         order_type=order_type,
         chosen_outcome_name=chosen_outcome_name,
         chosen_token_id=chosen_token_id,
@@ -488,6 +496,7 @@ def place_order(
     side_upper: str,
     size: float,
     price: float,
+    neg_risk: bool = False,
     order_type: str = "FOK",
     chosen_outcome_name: str | None = None,
     chosen_token_id: str | None = None,
@@ -536,7 +545,7 @@ def place_order(
         headers["x-wallet-address"] = wallet_address
 
     # Attempt EIP-712 signed order flow if config present
-    exchange_address = EIP712_DOMAIN_CONTRACT
+    exchange_address = EIP712_DOMAIN_NEGRISK_CONTRACT if neg_risk else EIP712_DOMAIN_CONTRACT
     private_key = os.getenv("EOA_WALLET_PK")
     signed_flow_payload = None
     try:
