@@ -553,14 +553,45 @@ def place_order(
             if not private_key.startswith("0x"):
                 private_key = "0x" + private_key
             # Numeric fields as ints for EIP-712
+            # Match TypeScript logic: round to 2 decimals, then multiply by 1e6, then round to integer
+            def round_to_decimals(x: float, decimals: int = 2) -> float:
+                """Round to specified number of decimals, matching TypeScript roundToDecimals"""
+                factor = 10 ** decimals
+                return round(float(x) * factor) / factor
+            
             def to_6d_int(x: float) -> int:
-                return int(round(float(x) * 1_000_000))
+                """Match TypeScript: round(stake, 2) * 1e6, then round to nearest integer"""
+                rounded = round_to_decimals(x, 2)
+                return int(round(rounded * 1_000_000))
+            
             # Build order payload
             side_num = 0 if side_upper == "BUY" else 1
             # use BigInt(Date.now()) for salt
             salt = int(time.time() * 1000)
-            maker_amount = to_6d_int(size * price if side_num == 0 else size)
-            taker_amount = to_6d_int(size if side_num == 0 else size * price)
+            
+            # Match TypeScript logic: size is shares, apply ±0.01 price adjustment for leeway
+            # This ensures effective price is slightly worse to prevent rejection due to rounding
+            if side_num == 0:  # BUY
+                # For BUY: size is shares we want to receive
+                # Adjust price upward (+0.01) to ensure effective price >= orderbook price
+                # makerAmount: USDC we pay = shares * (price + 0.01)
+                adjusted_price = price + 0.01
+                usdc_amount = round_to_decimals(size * adjusted_price, 2)
+                maker_amount = int(round(usdc_amount * 1_000_000))
+                
+                # takerAmount: shares we receive
+                taker_amount = to_6d_int(size)
+            else:  # SELL
+                # For SELL: size is shares we want to sell
+                # Adjust price downward (-0.01) to ensure effective price <= orderbook price
+                # makerAmount: shares we sell
+                maker_amount = to_6d_int(size)
+                
+                # takerAmount: USDC we receive = shares * (price - 0.01)
+                adjusted_price = max(0.01, price - 0.01)  # Ensure price doesn't go negative
+                usdc_amount = round_to_decimals(size * adjusted_price, 2)
+                taker_amount = int(round(usdc_amount * 1_000_000))
+
             # Frontend sets expiration and nonce to 0, feeRateBps to 0
             expiration = 0
             nonce = 0
