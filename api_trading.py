@@ -5,24 +5,29 @@ Almanac API Interactive Trading Client
 This script provides an interactive trading session with the Almanac API.
 It allows you to:
 - Generate Polymarket API credentials
-- Initiate a trading session
-- View trading session details
-- Exit the program
+- Initiate trading sessions and place orders
+- Link/unlink Bittensor UID to Almanac account
+- Manage multiple credential sets (wallet accounts)
+
+Credential Sets:
+Supports multiple wallet accounts via prefixed environment variables (e.g., WALLET1_EOA_WALLET_ADDRESS).
+Each set can have its own wallet address, private key, proxy funder, and Polymarket API credentials.
+Switch between sets at runtime - sessions are automatically cleared when switching accounts.
 
 Requirements:
 - Python 3.10+
-- Pip
-- CPU
 - Almanac account (setup at https://almanac.market)
 - EOA wallet private key for signing transactions
+- Optional: Polymarket API credentials (can be generated via this script)
 
 Python dependencies:
 - requests
 - dotenv
 - py-clob-client
 - eth-account
+- bittensor
 
-pip install requests dotenv py-clob-client eth-account
+pip install requests dotenv py-clob-client eth-account bittensor
 """
 
 import os
@@ -36,6 +41,7 @@ from eth_account.messages import encode_defunct
 from eth_account.messages import encode_typed_data as EIP712_ENCODE  # type: ignore
 import time
 import secrets
+import bittensor as bt
 from constants import VOLUME_FEE
 
 ALMANAC_API_URL = "https://api.almanac.market/api"
@@ -71,6 +77,206 @@ DEBUG_STATIC_MARKET = {
 
 CURRENT_SESSION = None
 SELECTED_MARKET = None
+SELECTED_CREDENTIAL_SET = None  # Stores the name of the selected credential set (None = default)
+CREDENTIAL_SETS = {}  # Dictionary of available credential sets
+
+def _detect_credential_sets():
+    """
+    Scan the .env file for credential sets.
+    Supports both default (no prefix) and named sets (with prefix like WALLET1_, WALLET2_, etc.)
+    
+    Returns:
+        dict: Dictionary mapping credential set names to their credential dicts
+    """
+    credential_sets = {}
+    
+    if not ENV_PATH.exists():
+        return credential_sets
+    
+    # Load the .env file to get all variables
+    load_dotenv(dotenv_path=str(ENV_PATH), override=True)
+    
+    # Required credential keys (must have values)
+    required_keys = [
+        "EOA_WALLET_ADDRESS",
+        "EOA_WALLET_PK",
+        "EOA_PROXY_FUNDER"
+    ]
+    
+    # Optional credential keys (must exist but can be empty)
+    optional_keys = [
+        "POLYMARKET_API_KEY",
+        "POLYMARKET_API_SECRET",
+        "POLYMARKET_API_PASSPHRASE"
+    ]
+    
+    # All credential keys (for detection purposes)
+    all_credential_keys = required_keys + optional_keys
+    
+    # Read the .env file directly to detect prefixes and values
+    try:
+        env_vars = {}  # Store all env vars from file
+        
+        with open(ENV_PATH, 'r') as f:
+            lines = f.readlines()
+        
+        # First pass: read all variables from file
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            
+            if '=' not in line:
+                continue
+            
+            key, value = line.split('=', 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")  # Remove quotes if present
+            env_vars[key] = value
+        
+        # Track which prefixes we've seen
+        seen_prefixes = set()
+        
+        # Second pass: detect prefixes
+        for key in env_vars.keys():
+            # Check if this key matches any credential key (with or without prefix)
+            for cred_key in all_credential_keys:
+                if key == cred_key:
+                    # Default credential set (no prefix)
+                    seen_prefixes.add("")
+                elif key.endswith(f"_{cred_key}"):
+                    # Named credential set (has prefix)
+                    prefix = key[:-len(f"_{cred_key}")]
+                    seen_prefixes.add(prefix)
+        
+        # Third pass: collect credentials for each prefix
+        for prefix in seen_prefixes:
+            creds = {}
+            all_required_present = True
+            
+            # Check required keys (must have values)
+            for req_key in required_keys:
+                if prefix:
+                    env_key = f"{prefix}_{req_key}"
+                else:
+                    env_key = req_key
+                
+                value = env_vars.get(env_key, "").strip()
+                if value:
+                    creds[req_key] = value
+                else:
+                    all_required_present = False
+                    break
+            
+            # Only proceed if all required keys are present with values
+            if not all_required_present:
+                continue
+            
+            # Add optional keys (can be empty)
+            for opt_key in optional_keys:
+                if prefix:
+                    env_key = f"{prefix}_{opt_key}"
+                else:
+                    env_key = opt_key
+                
+                value = env_vars.get(env_key, "").strip()
+                # Store even if empty (allows for credential generation later)
+                creds[opt_key] = value
+            
+            # Add the credential set
+            set_name = prefix if prefix else "default"
+            credential_sets[set_name] = creds
+        
+    except Exception as exc:
+        print(f"Warning: Could not detect credential sets: {exc}")
+    
+    return credential_sets
+
+def _get_credential(key: str) -> str | None:
+    """
+    Get a credential value, checking the selected credential set first,
+    then falling back to default environment variables.
+    
+    Args:
+        key: The credential key (e.g., "EOA_WALLET_ADDRESS")
+    
+    Returns:
+        The credential value or None if not found
+    """
+    # If a credential set is selected, use it
+    if SELECTED_CREDENTIAL_SET and SELECTED_CREDENTIAL_SET in CREDENTIAL_SETS:
+        creds = CREDENTIAL_SETS[SELECTED_CREDENTIAL_SET]
+        if key in creds:
+            return creds[key]
+    
+    # Fallback to default credentials (no prefix)
+    if "default" in CREDENTIAL_SETS and key in CREDENTIAL_SETS["default"]:
+        return CREDENTIAL_SETS["default"][key]
+    
+    # Final fallback to environment variables
+    return os.getenv(key)
+
+def select_credential_set():
+    """
+    Allow user to select which credential set to use.
+    Clears the current trading session when switching accounts.
+    """
+    global SELECTED_CREDENTIAL_SET, CREDENTIAL_SETS, CURRENT_SESSION, SELECTED_MARKET
+    
+    # Refresh credential sets
+    CREDENTIAL_SETS = _detect_credential_sets()
+    
+    if not CREDENTIAL_SETS:
+        print("\nNo credential sets found in the environment file.")
+        print("Please configure credentials in api_trading.env")
+        # Clear selection and session if no sets available
+        SELECTED_CREDENTIAL_SET = None
+        CURRENT_SESSION = None
+        SELECTED_MARKET = None
+        return
+    
+    # Validate that the currently selected set still exists
+    if SELECTED_CREDENTIAL_SET and SELECTED_CREDENTIAL_SET not in CREDENTIAL_SETS:
+        print(f"\n⚠ Previously selected credential set '{SELECTED_CREDENTIAL_SET}' no longer exists.")
+        print("Clearing session and resetting selection...")
+        SELECTED_CREDENTIAL_SET = None
+        CURRENT_SESSION = None
+        SELECTED_MARKET = None
+    
+    print("\nAvailable credential sets:")
+    sets_list = sorted(CREDENTIAL_SETS.keys())
+    for idx, set_name in enumerate(sets_list, start=1):
+        marker = " (current)" if set_name == SELECTED_CREDENTIAL_SET else ""
+        print(f"  {idx}) {set_name}{marker}")
+    
+    print(f"  {len(sets_list) + 1}) Cancel")
+    
+    choice = input(f"\nSelect credential set (1-{len(sets_list) + 1}): ").strip()
+    
+    try:
+        choice_num = int(choice)
+        if 1 <= choice_num <= len(sets_list):
+            new_set = sets_list[choice_num - 1]
+            
+            # If switching to a different credential set, clear the session
+            if new_set != SELECTED_CREDENTIAL_SET:
+                if CURRENT_SESSION:
+                    print("\n⚠ Clearing existing trading session (switching accounts)...")
+                    CURRENT_SESSION = None
+                    SELECTED_MARKET = None
+            
+            SELECTED_CREDENTIAL_SET = new_set
+            print(f"\n✓ Selected credential set: {SELECTED_CREDENTIAL_SET}")
+            # Show wallet address for confirmation
+            wallet = _get_credential("EOA_WALLET_ADDRESS")
+            if wallet:
+                print(f"  Wallet Address: {wallet}")
+        elif choice_num == len(sets_list) + 1:
+            print("Cancelled.")
+        else:
+            print("Invalid choice.")
+    except ValueError:
+        print("Invalid input. Please enter a number.")
 
 def _format_price(value):
     try:
@@ -433,12 +639,12 @@ def initiate_trading_session():
     load_dotenv(dotenv_path=str(ENV_PATH))
 
     # Load wallet address and private key
-    wallet_address = os.getenv("EOA_WALLET_ADDRESS")
+    wallet_address = _get_credential("EOA_WALLET_ADDRESS")
     if not wallet_address:
         print(f"EOA_WALLET_ADDRESS not found in {ENV_PATH}. Please set it and try again.")
         return
     
-    private_key = os.getenv("EOA_WALLET_PK")
+    private_key = _get_credential("EOA_WALLET_PK")
     if not private_key:
         print(f"EOA_WALLET_PK not found in {ENV_PATH}. Please set it and try again.")
         return
@@ -470,9 +676,9 @@ def initiate_trading_session():
         signature = "0x" + signature
 
     api_keys = {
-        "apiKey": os.getenv("POLYMARKET_API_KEY"),
-        "secret": os.getenv("POLYMARKET_API_SECRET"),
-        "passphrase": os.getenv("POLYMARKET_API_PASSPHRASE")
+        "apiKey": _get_credential("POLYMARKET_API_KEY"),
+        "secret": _get_credential("POLYMARKET_API_SECRET"),
+        "passphrase": _get_credential("POLYMARKET_API_PASSPHRASE")
     }
 
     response = requests.post(f'{ALMANAC_API_URL}/v1/trading/sessions', 
@@ -531,11 +737,11 @@ def place_order(
     )
     wallet_address = (
         CURRENT_SESSION.get("data").get("walletAddress")
-        or os.getenv("EOA_WALLET_ADDRESS")
+        or _get_credential("EOA_WALLET_ADDRESS")
     )
     proxy_address = (
         CURRENT_SESSION.get("data").get("proxyWallet")
-        or os.getenv("EOA_PROXY_FUNDER")
+        or _get_credential("EOA_PROXY_FUNDER")
     )
 
     headers = {"Content-Type": "application/json"}
@@ -546,7 +752,7 @@ def place_order(
 
     # Attempt EIP-712 signed order flow if config present
     exchange_address = EIP712_DOMAIN_NEGRISK_CONTRACT if neg_risk else EIP712_DOMAIN_CONTRACT
-    private_key = os.getenv("EOA_WALLET_PK")
+    private_key = _get_credential("EOA_WALLET_PK")
     signed_flow_payload = None
     try:
         if exchange_address and private_key and wallet_address:
@@ -825,13 +1031,329 @@ def _display_credentials(credentials) -> None:
     print(f"POLYMARKET_API_PASSPHRASE={credentials.api_passphrase}")
     print("")
 
+def initiate_wallet_session():
+    """
+    Initiate a wallet session with the Almanac API.
+    
+    Returns:
+    {
+        'success': True,
+        'data': {
+            'sessionId': '...',
+            'address': '0x...',
+            ...
+        },
+        'timestamp': '...'
+    }
+    """
+    load_dotenv(dotenv_path=str(ENV_PATH))
+
+    # Load wallet address and private key
+    wallet_address = _get_credential("EOA_WALLET_ADDRESS")
+    if not wallet_address:
+        print(f"EOA_WALLET_ADDRESS not found in {ENV_PATH}. Please set it and try again.")
+        return None
+    
+    private_key = _get_credential("EOA_WALLET_PK")
+    if not private_key:
+        print(f"EOA_WALLET_PK not found in {ENV_PATH}. Please set it and try again.")
+        return None
+    if not private_key.startswith("0x"):
+        private_key = "0x" + private_key
+    
+    # Validate address derives cleanly (optional)
+    try:
+        addr = Account.from_key(private_key).address.lower()
+        if addr != wallet_address.lower():
+            print(f"Private key does not match wallet address: {addr} != {wallet_address}")
+            return None
+    except Exception as exc:
+        print(f"Invalid private key: {exc}")
+        return None
+
+    # Prepare EIP-191 message (personal_sign)
+    message = "Create Almanac wallet session"
+    msg = encode_defunct(text=message)
+    signed = Account.from_key(private_key).sign_message(msg)
+    signature = signed.signature.hex() if hasattr(signed.signature, "hex") else signed.signature
+    if not isinstance(signature, str):
+        signature = str(signature)
+    if not signature.startswith("0x"):
+        signature = "0x" + signature
+
+    response = requests.post(
+        f'{ALMANAC_API_URL}/wallet/session',
+        headers={'Content-Type': 'application/json'},
+        json={
+            'signature': signature,
+            'message': message,
+            'walletAddress': wallet_address,
+            'userAgent': 'Python/1.0'
+        }
+    )
+    if response.status_code != 200:
+        print(f"Failed to create wallet session:")
+        try:
+            print(json.dumps(response.json(), indent=2))
+        except Exception:
+            print(response.text)
+        return None
+    return response.json()
+
+def unlink_bittensor_hotkey(session_id: str, wallet_address: str):
+    """
+    Unlink the Bittensor hotkey from the Almanac account.
+    
+    Args:
+        session_id: The wallet session ID
+        wallet_address: The wallet address
+    """
+    print("\nUnlinking Bittensor hotkey...")
+    
+    # Show disclaimer
+    print("\n" + "="*60)
+    print("IMPORTANT NOTE:")
+    print("="*60)
+    print("Unlinking your Bittensor hotkey will:")
+    print("- Your trading activity will no longer be tracked for this miner")
+    print("- You'll no longer be eligible for subnet alpha rewards")
+    print("- This unlinks your EOA wallet from your Bittensor identity")
+    print("\nYou will need to link a hotkey again to be eligible for subnet alpha rewards.")
+    print("="*60)
+    
+    confirm = input("\nAre you sure you want to unlink your Bittensor hotkey? (yes/no): ").strip().lower()
+    if confirm not in ("yes", "y"):
+        print("Unlinking cancelled.")
+        return
+    
+    try:
+        response = requests.post(
+            f"{ALMANAC_API_URL}/subnet/unlink-hotkey",
+            headers={
+                "x-session-id": session_id,
+                "x-wallet-address": wallet_address,
+                "Content-Type": "application/json"
+            },
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            print("Failed to unlink hotkey:")
+            try:
+                print(json.dumps(response.json(), indent=2))
+            except Exception:
+                print(response.text)
+            return
+        
+        data = response.json()
+        if data.get('success'):
+            print("✓ Bittensor integration unlinked")
+        else:
+            error_msg = data.get('error', 'Unknown error')
+            user_msg = data.get('userMessage', error_msg)
+            print(f"✗ Error: {error_msg}")
+            print(f"  Message: {user_msg}")
+    except Exception as exc:
+        print(f"Failed to unlink hotkey: {exc}")
+        import traceback
+        traceback.print_exc()
+
+def check_account_bittensor_status(wallet_address: str):
+    """
+    Check if an account already has a linked Bittensor hotkey.
+    
+    Returns:
+        dict with 'has_link' (bool), 'hotkey' (str or None), 'uid' (int or None)
+    """
+    try:
+        response = requests.get(
+            f"{ALMANAC_API_URL}/accounts/{wallet_address}",
+            headers={
+                "Content-Type": "application/json"
+            },
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            return {"has_link": False, "hotkey": None, "uid": None, "error": "Account lookup failed"}
+        
+        data = response.json()
+        if data.get('success') and data.get('data'):
+            account = data['data']
+            bittensor_hotkey = account.get('bittensor_hotkey')
+            bittensor_uid = account.get('bittensor_uid')
+            
+            if bittensor_hotkey:
+                return {
+                    "has_link": True,
+                    "hotkey": bittensor_hotkey,
+                    "uid": bittensor_uid
+                }
+            else:
+                return {"has_link": False, "hotkey": None, "uid": None}
+        else:
+            return {"has_link": False, "hotkey": None, "uid": None, "error": "Account not found"}
+    except Exception as exc:
+        return {"has_link": False, "hotkey": None, "uid": None, "error": str(exc)}
+
+def link_bittensor_uid():
+    """
+    Link Bittensor hotkey/uid to Almanac account.
+    Steps:
+    1. Create a wallet session
+    2. Check existing Bittensor link status
+    3. Sign hotkey address with Bittensor keypair
+    4. Link hotkey to account via API
+    """
+    print("\nLinking Bittensor UID to Almanac account...")
+    
+    # Step 1: Create wallet session
+    print("\nStep 1: Creating wallet session...")
+    try:
+        session_response = initiate_wallet_session()
+        if not session_response:
+            print("Failed to create wallet session. Please check your configuration.")
+            return
+        
+        session_data = session_response.get("data", {})
+        session_id = session_data.get("sessionId")
+        wallet_address = session_data.get("address")
+        
+        if not session_id or not wallet_address:
+            print("Wallet session created but missing required data.")
+            print(json.dumps(session_response, indent=2))
+            return
+        
+        print(f"✓ Wallet session created successfully")
+        print(f"  Wallet Address: {wallet_address}")
+    except Exception as exc:
+        print(f"Failed to create wallet session: {exc}")
+        import traceback
+        traceback.print_exc()
+        return
+    
+    # Step 2: Check existing Bittensor link status
+    print("\nStep 2: Checking existing Bittensor link status...")
+    status = check_account_bittensor_status(wallet_address)
+    
+    if status.get("error"):
+        print(f"⚠ Warning: Could not check account status: {status['error']}")
+        print("Proceeding with linking...")
+    elif status.get("has_link"):
+        print("✓ Bittensor integration found")
+        print(f"  Hotkey: {status['hotkey']}")
+        if status.get('uid') is not None:
+            print(f"  UID: {status['uid']}")
+        
+        print("\nOptions:")
+        print("  1) Link a different hotkey")
+        print("  2) Unlink current hotkey")
+        print("  3) Cancel")
+        choice = input("\nEnter choice (1/2/3): ").strip()
+        
+        if choice == "1":
+            # Proceed with linking a different hotkey
+            pass
+        elif choice == "2":
+            # Unlink the current hotkey
+            unlink_bittensor_hotkey(session_id, wallet_address)
+            return
+        else:
+            print("Cancelled.")
+            return
+    else:
+        print("No Bittensor integration found. Proceeding with linking...")
+    
+    # Step 3: Sign hotkey with Bittensor keypair
+    print("\nStep 3: Signing hotkey with Bittensor keypair...")
+    
+    # Prompt for wallet name and hotkey name
+    wallet_name = input("Enter Bittensor wallet name: ").strip()
+    if not wallet_name:
+        print("Wallet name is required. Cancelled.")
+        return
+    
+    hotkey_name = input("Enter Bittensor hotkey name: ").strip()
+    if not hotkey_name:
+        print("Hotkey name is required. Cancelled.")
+        return
+    
+    try:
+        # Initialize Bittensor wallet
+        print(f"Loading wallet: {wallet_name}/{hotkey_name}...")
+        wallet = bt.wallet(name=wallet_name, hotkey=hotkey_name)
+        
+        # Get hotkey address (SS58 format)
+        hotkey_address = wallet.hotkey.ss58_address
+        print(f"  Hotkey address: {hotkey_address}")
+        
+        # Sign the hotkey address (the message being signed is the hotkey itself)
+        message = hotkey_address
+        signature = wallet.hotkey.sign(message)
+        signature_hex = "0x" + signature.hex()
+        
+        print(f"✓ Hotkey signed successfully")
+    except Exception as exc:
+        print(f"Failed to sign hotkey: {exc}")
+        import traceback
+        traceback.print_exc()
+        return
+    
+    # Step 4: Link hotkey to account
+    print("\nStep 4: Linking hotkey to Almanac account...")
+    
+    try:
+        response = requests.post(
+            f"{ALMANAC_API_URL}/subnet/select-hotkey",
+            headers={
+                "x-session-id": session_id,
+                "x-wallet-address": wallet_address,
+                "Content-Type": "application/json"
+            },
+            json={
+                "hotkey": hotkey_address,
+                "signature": signature_hex
+            },
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            print("Failed to link hotkey:")
+            try:
+                print(json.dumps(response.json(), indent=2))
+            except Exception:
+                print(response.text)
+            return
+        
+        data = response.json()
+        if data.get('success'):
+            print("✓ Hotkey linked successfully")
+            selected_hotkey = data.get('data', {}).get('selectedHotkey', {})
+            uid = selected_hotkey.get('uid')
+            coldkey = data.get('data', {}).get('coldkey')
+            if uid is not None:
+                print(f"  UID: {uid}")
+            if coldkey:
+                print(f"  Coldkey: {coldkey}")
+        else:
+            error_msg = data.get('error', 'Unknown error')
+            user_msg = data.get('userMessage', error_msg)
+            print(f"✗ Error: {error_msg}")
+            print(f"  Message: {user_msg}")
+    except Exception as exc:
+        print(f"Failed to link hotkey: {exc}")
+        import traceback
+        traceback.print_exc()
+
 def generate_polymarket_credentials():
     """
     Generate Polymarket CLOB API credentials using py-clob-client with EOA_WALLET_PK from api_trading.env.
     """
+    global CREDENTIAL_SETS, SELECTED_CREDENTIAL_SET, CURRENT_SESSION, SELECTED_MARKET
+    
     print("\nGenerating Polymarket API credentials...")
     load_dotenv(dotenv_path=str(ENV_PATH))
-    private_key = os.getenv("EOA_WALLET_PK")
+    private_key = _get_credential("EOA_WALLET_PK")
     if not private_key:
         print(f"EOA_WALLET_PK not found in {ENV_PATH}. Please set it and try again.")
         return
@@ -844,7 +1366,7 @@ def generate_polymarket_credentials():
         print(f"Invalid private key: {exc}")
         return
 
-    proxy_funder_address = os.getenv("EOA_PROXY_FUNDER")
+    proxy_funder_address = _get_credential("EOA_PROXY_FUNDER")
     if not proxy_funder_address:
         print(f"EOA_PROXY_FUNDER not found in {ENV_PATH}. Please set it and try again.")
         return
@@ -858,6 +1380,32 @@ def generate_polymarket_credentials():
         return
 
     _display_credentials(credentials)
+    
+    # Prompt to reload environment file
+    print("="*60)
+    print("Next Steps:")
+    print("1. Copy the credentials above and add them to your api_trading.env file")
+    if SELECTED_CREDENTIAL_SET and SELECTED_CREDENTIAL_SET != "default":
+        prefix = f"{SELECTED_CREDENTIAL_SET}_"
+        print(f"   (Use prefix '{prefix}' for this credential set)")
+    print("2. Reload the environment file to use the new credentials")
+    print("="*60)
+    
+    reload = input("\nReload environment file now? (y/n): ").strip().lower()
+    if reload in ("y", "yes"):
+        # Reload environment and refresh credential sets
+        load_dotenv(dotenv_path=str(ENV_PATH), override=True)
+        CREDENTIAL_SETS = _detect_credential_sets()
+        print("✓ Environment file reloaded. Credential sets refreshed.")
+        
+        # Validate current selection still exists
+        if SELECTED_CREDENTIAL_SET and SELECTED_CREDENTIAL_SET not in CREDENTIAL_SETS:
+            print(f"⚠ Previously selected credential set '{SELECTED_CREDENTIAL_SET}' no longer exists.")
+            SELECTED_CREDENTIAL_SET = None
+            CURRENT_SESSION = None
+            SELECTED_MARKET = None
+    else:
+        print("Environment file not reloaded. You can reload it later by selecting a credential set.")
 
 def interactive_setup():
     """
@@ -885,12 +1433,44 @@ def interactive_setup():
     """
     print(ascii_banner)
     print("This script will help you generate Polymarket API credentials and provide a basic interactive flow.")
+    
+    # Initialize credential sets at startup
+    global CREDENTIAL_SETS, SELECTED_CREDENTIAL_SET, CURRENT_SESSION, SELECTED_MARKET
+    CREDENTIAL_SETS = _detect_credential_sets()
+    
+    # Validate existing selection if credential sets were loaded
+    if CREDENTIAL_SETS:
+        if SELECTED_CREDENTIAL_SET and SELECTED_CREDENTIAL_SET not in CREDENTIAL_SETS:
+            # Previously selected set no longer exists, clear everything
+            SELECTED_CREDENTIAL_SET = None
+            CURRENT_SESSION = None
+            SELECTED_MARKET = None
+        elif len(CREDENTIAL_SETS) > 1 and not SELECTED_CREDENTIAL_SET:
+            # If multiple sets found and no selection, default to "default" if it exists
+            if "default" in CREDENTIAL_SETS:
+                SELECTED_CREDENTIAL_SET = "default"
+            else:
+                # Otherwise select the first one
+                SELECTED_CREDENTIAL_SET = sorted(CREDENTIAL_SETS.keys())[0]
+    else:
+        # No credential sets found, clear everything
+        SELECTED_CREDENTIAL_SET = None
+        CURRENT_SESSION = None
+        SELECTED_MARKET = None
 
     while True:
         print("\nPlease choose an option:")
         print("  1) Start Trading")
         print("  2) Generate Polymarket API credentials")
-        print("  3) Exit")
+        print("  3) Link Bittensor UID to Almanac account")
+        if len(CREDENTIAL_SETS) > 1:
+            current_set = SELECTED_CREDENTIAL_SET or "default"
+            print(f"  4) Select Credential Set (current: {current_set})")
+            print("  5) Exit")
+            max_choice = 5
+        else:
+            print("  4) Exit")
+            max_choice = 4
         choice = input("\nEnter choice: ").strip()
 
         if choice == "1":
@@ -901,10 +1481,24 @@ def interactive_setup():
             except Exception as exc:
                 print(f"Failed to generate credentials: {exc}")
         elif choice == "3":
+            try:
+                link_bittensor_uid()
+            except Exception as exc:
+                print(f"Failed to link Bittensor UID: {exc}")
+        elif choice == "4":
+            if len(CREDENTIAL_SETS) > 1:
+                try:
+                    select_credential_set()
+                except Exception as exc:
+                    print(f"Failed to select credential set: {exc}")
+            else:
+                print("Ciao!")
+                break
+        elif choice == "5" and len(CREDENTIAL_SETS) > 1:
             print("Ciao!")
             break
         else:
-            print("Invalid choice. Please enter 1, 2, or 3.\n")
+            print(f"Invalid choice. Please enter 1 through {max_choice}.\n")
 
 # Run the miner.
 if __name__ == "__main__":
