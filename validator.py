@@ -112,6 +112,8 @@ class Validator:
         parser.add_argument('--db_score_logging', action='store_true', help="Enable postgres database score logging.")
         # Adds a flag to use synthetic data for testing
         parser.add_argument('--use_synthetic_data', action='store_true', help="Use synthetic data for testing.")
+        # Adds a flag to write trading history to a local JSON file
+        parser.add_argument('--write_trading_history', action='store_true', help="Write trading history to local trading_history.json file.")
         # Parse the config.
         config = bt.config(parser)
         # Set up logging directory.
@@ -393,6 +395,12 @@ class Validator:
                     try:
                         # Fetch the trading history
                         trading_history = self.fetch_trading_history()
+
+                        # Write trading history to file if enabled
+                        if self.config.write_trading_history:
+                            with open("trading_history.json", "w") as f:
+                                json.dump(trading_history, f, indent=2)
+                            bt.logging.info(f"✅ Trading history written to trading_history.json ({len(trading_history)} trades)")
 
                         # Fetch the $TAO price
                         tao_price_usd = self.fetch_tao_price()
