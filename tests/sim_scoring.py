@@ -41,7 +41,8 @@ def extract_miner_info(trading_history):
     
     Returns:
         all_uids: List[int] - list of unique miner IDs
-        all_hotkeys: Dict[int, str] - mapping of miner_id -> hotkey
+        all_hotkeys: List[str] - list where all_hotkeys[uid] gives the hotkey for that UID
+                                (matches validator format: metagraph.hotkeys)
     """
     miner_map = {}  # miner_id -> hotkey
     
@@ -66,7 +67,17 @@ def extract_miner_info(trading_history):
                 print(f"WARNING: Inconsistent hotkey for miner_id {miner_id}")
     
     all_uids = sorted(list(miner_map.keys()))
-    all_hotkeys = miner_map
+    
+    # Convert dict to list format to match validator (metagraph.hotkeys)
+    # The list needs to be large enough to handle the maximum UID
+    # all_hotkeys[uid] should give the hotkey for that UID
+    if all_uids:
+        max_uid = max(all_uids)
+        all_hotkeys = [""] * (max_uid + 1)  # Create list large enough for max UID
+        for uid, hotkey in miner_map.items():
+            all_hotkeys[uid] = hotkey
+    else:
+        all_hotkeys = []
     
     return all_uids, all_hotkeys
 
@@ -492,11 +503,25 @@ def main():
     # Extract miner information
     print("\nExtracting miner information...")
     all_uids, all_hotkeys = extract_miner_info(trading_history)
+    
+    # Ensure all_hotkeys list is large enough to handle BURN_UID and any other UIDs
+    # BURN_UID is 210, so we need at least 211 elements (0-indexed)
+    max_uid_from_trades = max(all_uids) if all_uids else 0
+    max_uid_needed = max(BURN_UID, max_uid_from_trades)
+    if EXCESS_MINER_WEIGHT_UID is not None:
+        max_uid_needed = max(max_uid_needed, EXCESS_MINER_WEIGHT_UID)
+    
+    if len(all_hotkeys) <= max_uid_needed:
+        all_hotkeys.extend([""] * (max_uid_needed + 1 - len(all_hotkeys)))
+    
     # Add EXCESS_MINER_WEIGHT_UID and BURN_UID to the list of UIDs
-    all_uids.insert(0, EXCESS_MINER_WEIGHT_UID)
+    if EXCESS_MINER_WEIGHT_UID is not None:
+        all_uids.insert(0, EXCESS_MINER_WEIGHT_UID)
     all_uids.append(BURN_UID)
-    print(f"Found {len(all_uids)} unique miners")
-    print(f"Miner UIDs: {all_uids}")
+    
+    miner_count = len([uid for uid in all_uids if uid not in [EXCESS_MINER_WEIGHT_UID, BURN_UID]])
+    print(f"Found {miner_count} unique miners from trading history")
+    print(f"All UIDs (including special UIDs): {all_uids}")
     
     # Run the scoring function
     print("\nRunning scoring algorithm...")
@@ -557,12 +582,18 @@ def main():
         all_uids
     )
     # Pretty print the weights
+    # The weights array is aligned with all_uids: weights[i] corresponds to all_uids[i]
     print("\n--- WEIGHTS ---")
     print(f"Total weight sum: {sum(weights):.6f}")
     print("-" * 80)
     for i, weight in enumerate(weights):
-        if i in all_uids:
-            print(f"{all_uids[i]:<6} {weight:.6f}")
+        if i < len(all_uids):
+            uid = all_uids[i]
+            # Print all weights (non-zero and special UIDs)
+            # This shows which miners received weights
+            if weight > 1e-9 or uid in [EXCESS_MINER_WEIGHT_UID, BURN_UID]:
+                uid_str = str(uid) if uid is not None else "None"
+                print(f"{uid_str:<6} {weight:.6f}")
     print("-" * 80)
 
 
