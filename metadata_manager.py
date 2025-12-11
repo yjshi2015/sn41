@@ -114,7 +114,7 @@ class MetadataManager:
                 if entry["uid"] == uid:
                     # Update existing entry
                     self.metadata_state["metadata"][i].update({
-                        "polymarket_id": polymarket_id.lower(),
+                        "polymarket_id": polymarket_id.lower() if polymarket_id is not None else None,
                         "last_updated": timestamp
                     })
                     return
@@ -122,7 +122,7 @@ class MetadataManager:
             # Add new entry (polymarket_id can be None if no metadata found)
             self.metadata_state["metadata"].append({
                 "uid": uid,
-                "polymarket_id": polymarket_id.lower(),
+                "polymarket_id": polymarket_id.lower() if polymarket_id is not None else None,
                 "last_updated": timestamp
             })
     
@@ -295,6 +295,8 @@ class MetadataManager:
         with self.lock:
             uid_info = self.get_uid_info(uid)
             if uid_info:
+                if uid_info.get("polymarket_id") is None:
+                    return None
                 return uid_info.get("polymarket_id").lower()
         return None
     
@@ -303,6 +305,8 @@ class MetadataManager:
         with self.lock:
             metadata_dict = {}
             for entry in self.metadata_state["metadata"]:
+                if entry.get("polymarket_id") is None:
+                    continue
                 metadata_dict[entry["uid"]] = entry["polymarket_id"].lower()
             return metadata_dict
     
