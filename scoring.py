@@ -71,7 +71,11 @@ from constants import (
   EXCESS_MINER_TAKE_PERCENTAGE,
   MAX_EPOCH_BUDGET_PERCENTAGE_FOR_BOOST,
   MINER_POOL_BUDGET_BOOST_PERCENTAGE,
-  MINER_POOL_WEIGHT_BOOST_PERCENTAGE
+  MINER_POOL_WEIGHT_BOOST_PERCENTAGE,
+  ENABLE_ES_MINER_INCENTIVES,
+  ESM_MIN_MULTIPLIER,
+  ENABLE_ES_MINER_LOSS_COMPENSATION,
+  ESM_LOSS_COMPENSATION_PERCENTAGE
 )
 
 def score_miners(
@@ -210,7 +214,11 @@ def score_miners(
         require_epoch_preds=False,
         verbose=verbose
     )
-    
+
+    # Check all positive miner scores and apply early stage miner incentives
+    if ENABLE_ES_MINER_INCENTIVES and len(miners_scores["scores"]) > 0:
+        miners_scores = apply_early_stage_miner_incentives(miner_history, miners_scores, current_epoch_budget)
+
     # Calculate the general pool scores using epoch-based history
     general_pool_scores = score_with_epochs(
         epoch_history=general_pool_history,
@@ -981,8 +989,8 @@ def print_pool_stats(miner_history, general_pool_history, include_current_epoch=
         headers.append("Ep. PNL")
         headers.append("Ep. ROI")
         headers.append("Ep. Earnings")
-        headers.append("Ep. Earnings/PnL")
-        headers.append("Ep. Earnings/Vol")
+        #headers.append("Ep. Earnings/PnL")
+        headers.append("Ep. Earnings/Fees")
     
     # Analyze miner pool
     if miner_history['n_entities'] > 0:
@@ -1006,6 +1014,7 @@ def create_pool_stats_table(epoch_history, pool_type, include_current_epoch=Fals
     """Create a table of historical stats for a pool."""
     v_prev_matrix = epoch_history["qualified_prev"]           # (n_epochs, n_entities) - qualified volume
     unqualified_matrix = epoch_history["unqualified_prev"]  # (n_epochs, n_entities) - unqualified volume
+    fees_matrix = epoch_history["fees_prev"]    # (n_epochs, n_entities) - fees collected
     profit_matrix = epoch_history["profit_prev"]      # (n_epochs, n_entities) - profit
     trade_counts_matrix = epoch_history["trade_counts"]  # (n_epochs, n_entities) - number of trades
     entity_ids = epoch_history["entity_ids"]
@@ -1020,6 +1029,7 @@ def create_pool_stats_table(epoch_history, pool_type, include_current_epoch=Fals
     current_epoch_qualified = v_prev_matrix[current_epoch_idx] if n_epochs > 0 else np.zeros(n_entities)
     current_epoch_unqualified = unqualified_matrix[current_epoch_idx] if n_epochs > 0 else np.zeros(n_entities)
     current_epoch_volume = current_epoch_qualified + current_epoch_unqualified
+    current_epoch_fees = fees_matrix[current_epoch_idx] if n_epochs > 0 else np.zeros(n_entities)
     current_epoch_profit = profit_matrix[current_epoch_idx] if n_epochs > 0 else np.zeros(n_entities)
     current_epoch_trades = trade_counts_matrix[current_epoch_idx] if n_epochs > 0 else np.zeros(n_entities)
     
@@ -1049,6 +1059,7 @@ def create_pool_stats_table(epoch_history, pool_type, include_current_epoch=Fals
         # Calculate current epoch stats
         epoch_volume = current_epoch_volume[entity_idx]
         epoch_qualified_volume = current_epoch_qualified[entity_idx]
+        epoch_fees = current_epoch_fees[entity_idx]
         epoch_pnl = current_epoch_profit[entity_idx]
         epoch_trades = int(current_epoch_trades[entity_idx])
         
@@ -1068,14 +1079,18 @@ def create_pool_stats_table(epoch_history, pool_type, include_current_epoch=Fals
                     break
 
         # Calculate the % of earnings of their PnL
-        earnings_percentage = 0.0
-        if earnings > 0:
-            earnings_percentage = earnings / total_pnl
+        #earnings_percentage = 0.0
+        #if earnings > 0:
+            #earnings_percentage = earnings / total_pnl
 
-        # Calculate the % of earnings to their current epoch volume
-        earnings_percentage_to_volume = 0.0
-        if epoch_volume > 0:
-            earnings_percentage_to_volume = earnings / epoch_volume
+        # Calculate the % of earnings to their current epoch fees
+        earnings_percentage_to_fees = 0.0
+        earnings_perc_to_fees_decimal = 0.0
+        earnings_perc_to_fees_content = "0"
+        if epoch_fees > 0 and earnings > 0:
+            earnings_perc_to_fees_decimal = earnings / epoch_fees
+            earnings_percentage_to_fees = earnings_perc_to_fees_decimal * 100
+            earnings_perc_to_fees_content = f"{earnings_perc_to_fees_decimal:.1f}x ({earnings_percentage_to_fees:.2f}%)"
         
         # Format entity ID based on pool type
         if pool_type == "Miner":
@@ -1103,8 +1118,8 @@ def create_pool_stats_table(epoch_history, pool_type, include_current_epoch=Fals
                 f"${epoch_pnl:,.2f}",
                 f"{epoch_roi:.4f}",
                 f"{earnings:.2f}",
-                f"{earnings_percentage:.4f}",
-                f"{earnings_percentage_to_volume:.4f}",
+                #f"{earnings_percentage:.4f}",
+                f"{earnings_perc_to_fees_content}",
             ])
         
         table_data.append(row_data)
@@ -1132,6 +1147,60 @@ def create_pool_stats_table(epoch_history, pool_type, include_current_epoch=Fals
         ranked_data.append([rank] + row)
     
     return ranked_data
+
+def apply_early_stage_miner_incentives(miner_history: Dict[str, Any], miners_scores: Dict[str, Any], current_epoch_budget: float) -> Dict[str, Any]:
+    """
+    Apply early stage miner incentives to ensure miners with positive scores
+    receive at least ESM_MIN_MULTIPLIER * their fees paid.
+    
+    Also gives fees back to miners with positive profit but no score (if ENABLE_ES_MINER_LOSS_COMPENSATION is True and eligible).
+    
+    Modifies tokens directly (not scores) since tokens are the actual rewards.
+    If total tokens exceed budget, scales down proportionally.
+    """
+    n_epochs = miner_history["n_epochs"]
+    n_entities = miner_history["n_entities"]
+    
+    if n_entities == 0 or n_epochs == 0:
+        return miners_scores
+    
+    fees_prev_matrix = miner_history["fees_prev"]
+    profit_prev_matrix = miner_history["profit_prev"]
+    trade_counts = miner_history["trade_counts"]
+    current_epoch_idx = n_epochs - 1
+    current_epoch_fees = fees_prev_matrix[current_epoch_idx]
+    current_epoch_profit = profit_prev_matrix[current_epoch_idx]
+
+    # Boost TOKENS for miners based on their performance
+    for entity_idx in range(n_entities):
+        entity_epochs_with_trades = np.sum(trade_counts[:, entity_idx] > 0)
+        
+        # If miner has positive tokens (score), give them a minimum of 1.2x their fees
+        if miners_scores["tokens"][entity_idx] > 0:
+            original_tokens = miners_scores["tokens"][entity_idx]
+            miners_scores["tokens"][entity_idx] = max(
+                miners_scores["tokens"][entity_idx], 
+                current_epoch_fees[entity_idx] * ESM_MIN_MULTIPLIER
+            )
+            new_tokens = miners_scores["tokens"][entity_idx]
+            if new_tokens > original_tokens:
+                print(f"Giving performant miner {entity_idx} reward boost: from {original_tokens:,.2f} -> {new_tokens:,.2f}")
+        # If miner has positive profit for this epoch, but no score, give them their fees back
+        elif ENABLE_ES_MINER_LOSS_COMPENSATION and current_epoch_profit[entity_idx] > 0 and entity_epochs_with_trades >= MIN_EPOCHS_FOR_ELIGIBILITY:
+            original_tokens = miners_scores["tokens"][entity_idx]
+            miners_scores["tokens"][entity_idx] = current_epoch_fees[entity_idx] * ESM_LOSS_COMPENSATION_PERCENTAGE
+            new_tokens = miners_scores["tokens"][entity_idx]
+            print(f"Giving loss-compensating miner {entity_idx} fees back: {new_tokens:,.2f}")
+
+    # Check if total tokens exceed budget
+    total_tokens = np.sum(miners_scores["tokens"])
+    if total_tokens > current_epoch_budget:
+        print(f"Early stage miner incentives: Total tokens {total_tokens:,.2f} exceeds budget {current_epoch_budget:,.2f}. Scaling down proportionally.")
+        # Scale down proportionally to fit budget
+        scale_factor = current_epoch_budget / total_tokens
+        miners_scores["tokens"] = miners_scores["tokens"] * scale_factor
+
+    return miners_scores
 
 def calculate_weights(miners_scores: Dict[str, Any], general_pool_scores: Dict[str, Any], current_epoch_budget: float, miners_to_penalize: List[int], all_uids: List[int]) -> List[float]:
     """
