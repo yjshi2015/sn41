@@ -6,6 +6,7 @@ This script provides an interactive trading session with the Almanac API.
 It allows you to:
 - Generate Polymarket API credentials
 - Initiate trading sessions and place orders
+- Fetch positions summary
 - Link/unlink Bittensor UID to Almanac account
 - Manage multiple credential sets (wallet accounts)
 
@@ -23,11 +24,12 @@ Requirements:
 Python dependencies:
 - requests
 - dotenv
+- tabulate
 - py-clob-client
 - eth-account
 - bittensor
 
-pip install requests dotenv py-clob-client eth-account bittensor
+pip install requests dotenv py-clob-client eth-account bittensor tabulate
 """
 
 import os
@@ -43,6 +45,7 @@ import time
 import secrets
 import bittensor as bt
 from datetime import datetime
+from tabulate import tabulate
 from constants import VOLUME_FEE, PRICE_BUFFER_ADJUSTMENT
 
 ALMANAC_API_URL = "https://api.almanac.market/api"
@@ -53,6 +56,9 @@ POLYGON_CHAIN_ID = 137
 EIP712_DOMAIN_CONTRACT = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E"
 EIP712_DOMAIN_NEGRISK_CONTRACT = "0xC5d563A36AE78145C45a50134d48A1215220f80a"
 ENV_PATH = Path("api_trading.env")
+
+# Default number of positions to fetch per page
+DEFAULT_POSITIONS_LIMIT = 25
 
 # Debug mode: if True, injects a static non-eligible market into search results for testing
 DEBUG = False
@@ -415,36 +421,115 @@ def _extract_event_list(payload_list: list) -> list:
 
 def _display_markets_for_event(event: dict) -> list:
     """
-    Print markets for a single event with concise outcomes summary.
+    Print markets for a single event with concise outcomes summary in a table format.
     Returns the list of markets for further selection.
     """
     markets = event.get("markets") or []
     if not isinstance(markets, list) or not markets:
         print("No markets found for this event.")
         return []
-    # Order by first outcome price (index-0, commonly 'Yes') ascending (lowest first)
-    def _first_yes_price(m):
-        prices = m.get("outcome_prices") or []
+    # Sort markets: Moneyline first, then by volume (big to small)
+    def _sort_key(m):
+        # Check if it's a Moneyline market
+        sports_market_type = m.get("sports_market_type") or m.get("sportsMarketType") or ""
+        is_moneyline = sports_market_type.lower() == "moneyline"
+        
+        # Get volume (try multiple field names)
+        volume = m.get("volume") or m.get("totalVolume") or m.get("total_volume") or 0
         try:
-            if isinstance(prices, list) and len(prices) > 0:
-                return float(prices[0])
-        except Exception:
-            pass
-        # Fallbacks
-        try:
-            return float(m.get("yesPrice") or 0.0)
-        except Exception:
-            return 0.0
-    markets = sorted(markets, key=_first_yes_price, reverse=False)
-    print("\nMarkets:")
+            volume = float(volume)
+        except (ValueError, TypeError):
+            volume = 0.0
+        
+        # Return tuple: (is_moneyline, -volume)
+        # is_moneyline: True=0 (sorts first), False=1 (sorts later)
+        # -volume: negative so bigger volumes sort first
+        return (0 if is_moneyline else 1, -volume)
+    
+    markets = sorted(markets, key=_sort_key)
+    
+    # Find maximum number of outcomes across all markets to determine column count
+    max_outcomes = 0
+    for m in markets:
+        outcomes = m.get("outcomes") or []
+        if isinstance(outcomes, list):
+            max_outcomes = max(max_outcomes, len(outcomes))
+    
+    # Build table rows
+    table_rows = []
     for idx, m in enumerate(markets, start=1):
         title = m.get("title") or m.get("question") or m.get("name") or "Untitled"
         market_id = m.get("id") or m.get("marketId") or m.get("_id") or "unknown"
-        summary = _extract_outcomes_summary(m)
-        if summary:
-            print(f"  {idx}) {title} [{market_id}]\n      {summary}")
+        
+        # Extract outcomes and prices for this market
+        outcomes = m.get("outcomes") or []
+        outcome_prices = m.get("outcome_prices") or []
+        
+        # Build row: #, Market, then each outcome (name + price), then Market ID
+        row = [
+            str(idx),
+            _truncate_text(title, 50)
+        ]
+        
+        # Add outcome name and price for each outcome column
+        if isinstance(outcomes, list) and isinstance(outcome_prices, list) and len(outcomes) == len(outcome_prices):
+            for outcome, price in zip(outcomes, outcome_prices):
+                outcome_name = outcome if isinstance(outcome, str) else (outcome.get("name") if isinstance(outcome, dict) else str(outcome))
+                formatted_price = _format_price(price)
+                row.append(f"{outcome_name} {formatted_price}")
         else:
-            print(f"  {idx}) {title} [{market_id}]")
+            # Fallback: try to extract outcomes from other formats
+            for i in range(len(outcomes) if isinstance(outcomes, list) else 0):
+                outcome = outcomes[i]
+                outcome_name = outcome if isinstance(outcome, str) else (outcome.get("name") if isinstance(outcome, dict) else str(outcome))
+                price = outcome_prices[i] if isinstance(outcome_prices, list) and i < len(outcome_prices) else None
+                if price is not None:
+                    formatted_price = _format_price(price)
+                    row.append(f"{outcome_name} {formatted_price}")
+                else:
+                    row.append(outcome_name if outcome_name else "-")
+        
+        # Pad with "-" if market has fewer outcomes than max
+        while len(row) < 2 + max_outcomes:
+            row.append("-")
+        
+        # Add Volume column (round to nearest dollar, no dollar sign)
+        volume = m.get("volume") or m.get("totalVolume") or m.get("total_volume") or 0
+        try:
+            volume_float = float(volume)
+            volume_rounded = round(volume_float)
+            row.append(str(volume_rounded))
+        except (ValueError, TypeError):
+            row.append("-")
+        
+        # Add Liquidity column (round to nearest dollar, no dollar sign)
+        liquidity = m.get("liquidity") or m.get("totalLiquidity") or m.get("total_liquidity") or 0
+        try:
+            liquidity_float = float(liquidity)
+            liquidity_rounded = round(liquidity_float)
+            row.append(str(liquidity_rounded))
+        except (ValueError, TypeError):
+            row.append("-")
+        
+        # Add Type column (sports_market_type if it exists, replace _ with spaces)
+        sports_market_type = m.get("sports_market_type") or m.get("sportsMarketType") or "-"
+        if sports_market_type != "-":
+            sports_market_type = sports_market_type.replace("_", " ")
+        row.append(sports_market_type)
+        
+        # Add Market ID as last column
+        row.append(market_id)
+        
+        table_rows.append(row)
+    
+    # Define table headers: #, Market, then Outcome 1, Outcome 2, etc., then Volume, Liquidity, Type, then Market ID
+    outcome_headers = [f"Outcome {i+1}" for i in range(max_outcomes)]
+    headers = ["#", "Market"] + outcome_headers + ["Volume", "Liquidity", "Type", "Market ID"]
+    
+    # Print table
+    print(f"\nMarkets ({len(markets)} found):")
+    print(tabulate(table_rows, headers=headers, tablefmt="grid", stralign="left"))
+    
     return markets
 
 def fetch_clob_prices(token_ids: list) -> dict | None:
@@ -725,10 +810,16 @@ def _display_outcomes_and_choose(market: dict):
     chosen = normalized[sel_idx - 1]
     return (chosen.get("name"), chosen.get("price"), chosen.get("tokenId"))
 
-def _place_order_now(market: dict, chosen_outcome_name: str | None = None, chosen_token_id: str | None = None):
+def _place_order_now(market: dict, chosen_outcome_name: str | None = None, chosen_token_id: str | None = None, available_shares: float | None = None):
     """
     Inline order placement flow; prompts for side/size/price, shows summary, and submits with confirmation.
     User can type 'c' at any prompt to cancel.
+    
+    Args:
+        market: Market dictionary
+        chosen_outcome_name: Pre-selected outcome name
+        chosen_token_id: Pre-selected token ID
+        available_shares: Available shares for sell orders (to validate against)
     """
     global CURRENT_SESSION
     if not CURRENT_SESSION:
@@ -746,28 +837,36 @@ def _place_order_now(market: dict, chosen_outcome_name: str | None = None, chose
         neg_risk = neg_risk.lower() in ("true", "1", "yes")
     neg_risk = bool(neg_risk)
     
-    print("\nPlace order (type 'c' at any prompt to cancel):")
+    print("\nPlace order (type 'c' or 'cancel' at any prompt to cancel):")
     
     # Side input with cancel option
-    side_input = input("Side (buy/sell/c) [buy]: ").strip().lower()
-    if side_input == "c":
+    side_input = input("Side (buy/b/sell/s/cancel/c) [buy]: ").strip().lower()
+    if side_input in ("c", "cancel"):
         print("Order cancelled.")
         return
     side = side_input or "buy"
-    if side not in ("buy", "sell"):
-        print("Side must be 'buy' or 'sell'.")
+    # Map aliases to full names
+    if side in ("b", "buy"):
+        side = "buy"
+    elif side in ("s", "sell"):
+        side = "sell"
+    else:
+        print("Side must be 'buy', 'b', 'sell', or 's'.")
         return
     
-    # Size and price input with cancel option and $5 minimum validation
+    # Size and price input with cancel option
+    # For sell orders: check available shares, no $5 minimum
+    # For buy orders: check $5 minimum
     while True:
-        size_str = input("Size (quantity/c) [1]: ").strip()
-        if size_str.lower() == "c":
+        size_prompt = f"Size (quantity/cancel/c) [{available_shares:.2f}]: " if (side == "sell" and available_shares) else "Size (quantity/cancel/c) [1]: "
+        size_str = input(size_prompt).strip()
+        if size_str.lower() in ("c", "cancel"):
             print("Order cancelled.")
             return
-        size_str = size_str or "1"
+        size_str = size_str or (f"{available_shares:.2f}" if (side == "sell" and available_shares) else "1")
         
-        price_str = input("Price (0-1/c) [0.01]: ").strip()
-        if price_str.lower() == "c":
+        price_str = input("Price (0-1/cancel/c) [0.01]: ").strip()
+        if price_str.lower() in ("c", "cancel"):
             print("Order cancelled.")
             return
         price_str = price_str or "0.01"
@@ -781,10 +880,19 @@ def _place_order_now(market: dict, chosen_outcome_name: str | None = None, chose
         if size <= 0 or price <= 0 or price > 1:
             print("Size must be > 0 and price must be in (0, 1]. Try again.")
             continue
-        notional = size * price
-        if notional < 5.0:
-            print(f"Order notional ${notional:.2f} is below the $5 minimum. Please increase size and/or price.")
-            continue
+        
+        # For sell orders: check available shares
+        if side == "sell" and available_shares is not None:
+            if size > available_shares:
+                print(f"Cannot sell {size:.2f} shares. You only have {available_shares:.2f} shares available.")
+                continue
+        
+        # For buy orders: check $5 minimum
+        if side == "buy":
+            notional = size * price
+            if notional < 5.0:
+                print(f"Order notional ${notional:.2f} is below the $5 minimum. Please increase size and/or price.")
+                continue
         break
     
     # Order type input with cancel option
@@ -793,8 +901,8 @@ def _place_order_now(market: dict, chosen_outcome_name: str | None = None, chose
     print("  FAK - Fill And Kill: Market Order will be filled immediately with what is available and the rest cancelled")
     # GTC and GTD are not supported yet
     #print("  GTC - Good Till Canceled: Limit order remains active until filled or cancelled")
-    order_type_input = input("Order type (fok/fak/c) [fok]: ").strip().upper()
-    if order_type_input == "C":
+    order_type_input = input("Order type (fok/fak/cancel/c) [fok]: ").strip().upper()
+    if order_type_input in ("C", "CANCEL"):
         print("Order cancelled.")
         return
     order_type = order_type_input or "FOK"
@@ -854,6 +962,774 @@ def _place_order_now(market: dict, chosen_outcome_name: str | None = None, chose
         chosen_token_id=chosen_token_id,
     )
 
+def fetch_positions(filter_type: str = "all", limit: int = 100, offset: int = 0):
+    """
+    Fetch user's positions from the Almanac API.
+    
+    Args:
+        filter_type: 'all', 'live', or 'closed'
+        limit: Maximum number of positions to return (1-100)
+        offset: Number of positions to skip
+    
+    Returns:
+        Response data with positions or None if error
+    """
+    global CURRENT_SESSION
+    if not CURRENT_SESSION:
+        print("No active trading session. Create a session first.")
+        return None
+    
+    session_id = CURRENT_SESSION.get("data").get("sessionId")
+    wallet_address = (
+        CURRENT_SESSION.get("data").get("walletAddress")
+        or _get_credential("EOA_WALLET_ADDRESS")
+    )
+    
+    headers = {"Content-Type": "application/json"}
+    if session_id:
+        headers["x-session-id"] = session_id
+    if wallet_address:
+        headers["x-wallet-address"] = wallet_address
+    
+    params = {
+        "filter": filter_type,
+        "limit": limit,
+        "offset": offset
+    }
+    
+    try:
+        response = requests.get(
+            f"{ALMANAC_API_URL}/v1/trading/positions",
+            headers=headers,
+            params=params,
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            print("Failed to fetch positions:")
+            try:
+                print(json.dumps(response.json(), indent=2))
+            except Exception:
+                print(response.text)
+            return None
+        
+        return response.json()
+    except Exception as exc:
+        print(f"Error fetching positions: {exc}")
+        return None
+
+def fetch_positions_summary():
+    """
+    Fetch user's positions summary from the Almanac API.
+    
+    Returns:
+        Response data with summary or None if error
+    """
+    global CURRENT_SESSION
+    if not CURRENT_SESSION:
+        print("No active trading session. Create a session first.")
+        return None
+    
+    session_id = CURRENT_SESSION.get("data").get("sessionId")
+    wallet_address = (
+        CURRENT_SESSION.get("data").get("walletAddress")
+        or _get_credential("EOA_WALLET_ADDRESS")
+    )
+    
+    headers = {"Content-Type": "application/json"}
+    if session_id:
+        headers["x-session-id"] = session_id
+    if wallet_address:
+        headers["x-wallet-address"] = wallet_address
+    
+    try:
+        response = requests.get(
+            f"{ALMANAC_API_URL}/v1/trading/positions/summary",
+            headers=headers,
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            print("Failed to fetch positions summary:")
+            try:
+                print(json.dumps(response.json(), indent=2))
+            except Exception:
+                print(response.text)
+            return None
+        
+        return response.json()
+    except Exception as exc:
+        print(f"Error fetching positions summary: {exc}")
+        return None
+
+def _format_position_value(value, is_pnl=False, is_current_value=False):
+    """Format a position value (price, size, etc.) for display."""
+    if value is None:
+        return "-"
+    try:
+        f = float(value)
+        # Special handling for current_value = 0
+        if is_current_value and f == 0:
+            return "0"
+        if is_pnl:
+            # For P&L, show with sign
+            sign = "+" if f >= 0 else ""
+            return f"{sign}{f:.2f}"
+        return f"{f:.2f}" if f >= 0.01 else f"{f:.6f}"
+    except Exception:
+        return str(value) if value is not None else "-"
+
+def _truncate_text(text, max_length=50):
+    """Truncate text to max_length, adding ellipsis if needed."""
+    if not text:
+        return "-"
+    text_str = str(text)
+    if len(text_str) <= max_length:
+        return text_str
+    return text_str[:max_length-3] + "..."
+
+def _format_timestamp(timestamp):
+    """Format timestamp to a shorter, readable format."""
+    if not timestamp:
+        return "-"
+    try:
+        # Try parsing ISO format
+        if isinstance(timestamp, str):
+            if 'T' in timestamp:
+                dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                return dt.strftime("%Y-%m-%d %H:%M")
+        # Try parsing as timestamp
+        if isinstance(timestamp, (int, float)):
+            dt = datetime.fromtimestamp(timestamp)
+            return dt.strftime("%Y-%m-%d %H:%M")
+        return str(timestamp)
+    except Exception:
+        return str(timestamp)
+
+def _display_positions(positions_data):
+    """
+    Display positions in a user-friendly format.
+    
+    Args:
+        positions_data: Response data from fetch_positions (dict with 'data' key containing positions list)
+    
+    Returns:
+        dict with pagination info: {'has_more': bool, 'offset': int, 'limit': int, 'total': int}
+    """
+    if not positions_data:
+        print("No positions data received.")
+        return None, []
+    
+    # Extract positions list from response
+    positions = []
+    pagination_info = None
+    
+    if isinstance(positions_data, dict):
+        positions = positions_data.get("data", [])
+        if not isinstance(positions, list):
+            # Try other common response shapes
+            positions = positions_data.get("positions", [])
+            if not isinstance(positions, list):
+                positions = []
+        
+        # Extract pagination info
+        pagination = positions_data.get("pagination", {})
+        if pagination:
+            pagination_info = {
+                "has_more": pagination.get("hasMore", False),
+                "offset": pagination.get("offset", 0),
+                "limit": pagination.get("limit", DEFAULT_POSITIONS_LIMIT),
+                "total": pagination.get("total", len(positions))
+            }
+    elif isinstance(positions_data, list):
+        positions = positions_data
+    
+    if not positions:
+        print("\nNo positions found.")
+        return pagination_info, []
+    
+    # Build table rows
+    table_rows = []
+    for idx, pos in enumerate(positions, start=1):
+        # Market information
+        market_title = pos.get("title") or "Unknown Market"
+        
+        # Outcome information
+        outcome = pos.get("outcome") or "-"
+        
+        # Position details (all come as strings from API)
+        size_str = pos.get("size") or "0"
+        avg_price_str = pos.get("avg_price") or "0"
+        initial_value_str = pos.get("initial_value") or "0"
+        current_value_str = pos.get("current_value") or "0"
+        
+        # Convert strings to floats for formatting
+        try:
+            size = float(size_str)
+        except (ValueError, TypeError):
+            size = 0.0
+        
+        try:
+            avg_price = float(avg_price_str)
+        except (ValueError, TypeError):
+            avg_price = 0.0
+        
+        try:
+            initial_value = float(initial_value_str)
+        except (ValueError, TypeError):
+            initial_value = 0.0
+        
+        try:
+            current_value = float(current_value_str)
+        except (ValueError, TypeError):
+            current_value = 0.0
+        
+        # P&L information (strings from API)
+        cash_pnl_str = pos.get("cash_pnl") or "0"
+        percent_pnl_str = pos.get("percent_pnl") or "0"
+        
+        try:
+            cash_pnl = float(cash_pnl_str)
+        except (ValueError, TypeError):
+            cash_pnl = 0.0
+        
+        try:
+            percent_pnl = float(percent_pnl_str)
+        except (ValueError, TypeError):
+            percent_pnl = 0.0
+        
+        # Status
+        is_completed = pos.get("is_completed", False)
+        status = "Completed" if is_completed else "Open"
+        
+        # Timestamps
+        completed_at = pos.get("completed_at")
+        
+        # Build row with index as first column
+        row = [
+            str(idx),
+            _truncate_text(market_title, 35),
+            outcome,
+            f"{size:.2f}",
+            _format_position_value(avg_price),
+            _format_position_value(initial_value),
+            _format_position_value(current_value, is_current_value=True),
+            _format_position_value(cash_pnl, is_pnl=True),
+            f"{percent_pnl:.1f}%",
+            status,
+            _format_timestamp(completed_at) if completed_at else "-",
+        ]
+        table_rows.append(row)
+    
+    # Define table headers with # as first column
+    headers = [
+        "#",
+        "Market",
+        "Outcome",
+        "Size",
+        "Avg Price",
+        "Initial Value",
+        "Current Value",
+        "P&L",
+        "ROI",
+        "Status",
+        "Completed At"
+    ]
+    
+    # Calculate summary statistics
+    total_initial_value = sum(float(pos.get("initial_value") or "0") for pos in positions)
+    total_current_value = sum(float(pos.get("current_value") or "0") for pos in positions)
+    total_cash_pnl = sum(float(pos.get("cash_pnl") or "0") for pos in positions)
+    completed_count = sum(1 for pos in positions if pos.get("is_completed", False))
+    open_count = len(positions) - completed_count
+    
+    # Print table
+    if pagination_info:
+        total_display = pagination_info.get("total", len(positions))
+        current_range_start = pagination_info.get("offset", 0) + 1
+        current_range_end = pagination_info.get("offset", 0) + len(positions)
+        print(f"\nPositions (showing {current_range_start}-{current_range_end} of {total_display}):")
+    else:
+        print(f"\nPositions ({len(positions)} found):")
+    
+    print(tabulate(table_rows, headers=headers, tablefmt="grid", stralign="left"))
+    
+    # Print summary
+    print("\n" + "=" * 80)
+    print("Summary:")
+    print("=" * 80)
+    print(f"Total Positions: {len(positions)} ({open_count} Open, {completed_count} Completed)")
+    print(f"Total Initial Value: {total_initial_value:.2f}")
+    print(f"Total Current Value: {total_current_value:.2f}")
+    print(f"Total P&L: {total_cash_pnl:+.2f}")
+    if total_initial_value > 0:
+        total_percent_pnl = (total_cash_pnl / total_initial_value) * 100
+        print(f"Total ROI: {total_percent_pnl:+.1f}%")
+    print("=" * 80)
+    
+    return pagination_info, positions
+
+def _position_to_market_dict(position: dict) -> dict:
+    """
+    Convert a position dict to a market dict format for use with order placement.
+    
+    Args:
+        position: Position dict from API
+        
+    Returns:
+        Market dict with required fields for order placement
+    """
+    # Try to get market ID - positions might have event_id which could be the market ID
+    # or we might need to look it up. For now, use event_id as market_id.
+    market_id = position.get("marketId") or position.get("market_id") or position.get("event_id") or position.get("eventId")
+    
+    market_dict = {
+        "id": market_id,
+        "title": position.get("title") or "Unknown Market",
+        "neg_risk": position.get("neg_risk") or position.get("negRisk") or False,
+    }
+    return market_dict
+
+def _select_position_for_trade(positions: list):
+    """
+    Allow user to select a position from the list and go to order flow.
+    
+    Args:
+        positions: List of position dicts
+    """
+    if not positions:
+        print("No positions available.")
+        return
+    
+    # Prompt for position selection
+    print("\nSell or Add to your position (or Enter to cancel):")
+    try:
+        choice = input("Position number: ").strip()
+        if not choice:
+            print("Cancelled.")
+            return
+        
+        position_idx = int(choice) - 1
+        if position_idx < 0 or position_idx >= len(positions):
+            print("Invalid position number.")
+            return
+        
+        selected_position = positions[position_idx]
+        
+        # Check if position is open
+        is_completed = selected_position.get("is_completed", False)
+        if is_completed:
+            print("Cannot trade a completed position.")
+            return
+        
+        # Get position details
+        size_str = selected_position.get("size") or "0"
+        outcome = selected_position.get("outcome") or None
+        token_id = selected_position.get("token_id") or selected_position.get("tokenId")
+        event_id = selected_position.get("event_id") or selected_position.get("eventId")
+        
+        try:
+            position_size = float(size_str)
+        except (ValueError, TypeError):
+            print("Invalid position size.")
+            return
+        
+        if position_size <= 0:
+            print("Position size must be greater than 0.")
+            return
+        
+        # Show position details
+        market_title = selected_position.get("title") or "Unknown Market"
+        print(f"\nSelected position:")
+        print(f"  Market: {market_title}")
+        print(f"  Outcome: {outcome}")
+        print(f"  Current Size: {position_size:.2f}")
+        
+        # Fetch market details from API to get outcomes and clob_token_ids
+        print("\nFetching latest market prices...")
+        market_dict = None
+        if event_id:
+            try:
+                event_resp = requests.get(f"{ALMANAC_API_URL}/markets/events/{event_id}", timeout=30)
+                if event_resp.status_code == 200:
+                    event_data = event_resp.json()
+                    # Handle response wrapped in 'data' or direct event object
+                    full_event = event_data.get("data") or event_data
+                    markets = full_event.get("markets") or []
+                    
+                    # Find the market that matches this position (by token_id or outcome)
+                    for market in markets:
+                        market_token_ids = market.get("clob_token_ids") or []
+                        if token_id and str(token_id) in [str(tid) for tid in market_token_ids]:
+                            market_dict = market
+                            break
+                        # Fallback: use first market if we can't match by token
+                        if not market_dict:
+                            market_dict = market
+                    
+                    # If we found a market, fetch and display prices
+                    if market_dict:
+                        # Update market with latest prices from CLOB
+                        market_dict = _update_market_prices_from_clob(market_dict)
+                        
+                        # Display outcomes with prices
+                        outcomes = market_dict.get("outcomes") or []
+                        outcome_prices = market_dict.get("outcome_prices") or []
+                        clob_token_ids = market_dict.get("clob_token_ids") or []
+                        clob_prices = market_dict.get("_clob_prices")
+                        
+                        if outcomes:
+                            print("\nCurrent Market Prices:")
+                            for idx, outcome_name in enumerate(outcomes):
+                                outcome_name_str = outcome_name if isinstance(outcome_name, str) else (outcome_name.get("name") if isinstance(outcome_name, dict) else str(outcome_name))
+                                price = None
+                                if isinstance(outcome_prices, list) and idx < len(outcome_prices):
+                                    price = outcome_prices[idx]
+                                
+                                # Show BUY/SELL prices if available
+                                token_id_for_outcome = clob_token_ids[idx] if idx < len(clob_token_ids) else None
+                                buy_price = None
+                                sell_price = None
+                                if clob_prices and token_id_for_outcome:
+                                    token_id_str = str(token_id_for_outcome)
+                                    token_price_data = clob_prices.get(token_id_str) or clob_prices.get(str(int(token_id_for_outcome)))
+                                    if token_price_data:
+                                        buy_price = token_price_data.get("BUY")
+                                        sell_price = token_price_data.get("SELL")
+                                
+                                if price is not None:
+                                    price_str = _format_price(price)
+                                    if buy_price and sell_price:
+                                        print(f"  {outcome_name_str}: {price_str} (Buy: {_format_price(buy_price)}, Sell: {_format_price(sell_price)})")
+                                    else:
+                                        print(f"  {outcome_name_str}: {price_str}")
+                                else:
+                                    print(f"  {outcome_name_str}: -")
+                        else:
+                            print("  (No outcomes found)")
+                    else:
+                        print("  (Could not fetch market details)")
+            except Exception as exc:
+                print(f"  (Could not fetch market prices: {exc})")
+        
+        # Convert position to market dict if we didn't get one from API
+        if not market_dict:
+            market_dict = _position_to_market_dict(selected_position)
+            # Ensure we have a market ID - use event_id if market_id is not available
+            if not market_dict.get("id") and event_id:
+                market_dict["id"] = event_id
+        
+        # Go to order flow - user can choose buy (add to position) or sell
+        # Pass available_shares for sell order validation
+        _place_order_now(market_dict, chosen_outcome_name=outcome, chosen_token_id=token_id, available_shares=position_size)
+        
+    except ValueError:
+        print("Invalid input. Please enter a number.")
+    except Exception as exc:
+        print(f"Error: {exc}")
+
+def _display_positions_summary(summary_data):
+    """
+    Display positions summary in a user-friendly format.
+    
+    Args:
+        summary_data: Response data from fetch_positions_summary
+    """
+    if not summary_data:
+        print("No summary data received.")
+        return
+    
+    # Extract summary data from response
+    summary = None
+    if isinstance(summary_data, dict):
+        if summary_data.get("success") and summary_data.get("data"):
+            summary = summary_data.get("data")
+        elif "data" in summary_data:
+            summary = summary_data.get("data")
+        else:
+            summary = summary_data
+    
+    if not summary:
+        print("\nNo summary data found.")
+        return
+    
+    # Extract values (handle both camelCase and snake_case, and both string and numeric types)
+    total_value = summary.get("totalValue") or summary.get("total_value") or 0
+    total_volume = summary.get("totalVolume") or summary.get("total_volume") or 0
+    total_pnl = summary.get("totalPnL") or summary.get("total_pnl") or 0
+    total_pnl_percent = summary.get("totalPnLPercent") or summary.get("total_pnl_percent") or 0
+    total_predictions = summary.get("totalPredictions") or summary.get("total_predictions") or 0
+    completed_positions = summary.get("completedPositions") or summary.get("completed_positions") or 0
+    winning_trades = summary.get("winningTrades") or summary.get("winning_trades") or 0
+    win_rate = summary.get("winRate") or summary.get("win_rate") or 0
+    
+    # Convert to floats if strings
+    try:
+        total_value = float(total_value)
+    except (ValueError, TypeError):
+        total_value = 0.0
+    
+    try:
+        total_volume = float(total_volume)
+    except (ValueError, TypeError):
+        total_volume = 0.0
+    
+    try:
+        total_pnl = float(total_pnl)
+    except (ValueError, TypeError):
+        total_pnl = 0.0
+    
+    try:
+        total_pnl_percent = float(total_pnl_percent)
+    except (ValueError, TypeError):
+        total_pnl_percent = 0.0
+    
+    try:
+        total_predictions = int(total_predictions)
+    except (ValueError, TypeError):
+        total_predictions = 0
+    
+    try:
+        completed_positions = int(completed_positions)
+    except (ValueError, TypeError):
+        completed_positions = 0
+    
+    try:
+        winning_trades = int(winning_trades)
+    except (ValueError, TypeError):
+        winning_trades = 0
+    
+    try:
+        win_rate = float(win_rate)
+    except (ValueError, TypeError):
+        win_rate = 0.0
+    
+    # Display summary
+    print("\n" + "=" * 80)
+    print("Positions Summary")
+    print("=" * 80)
+    
+    # Build summary table
+    summary_rows = [
+        ["Total Value", f"{total_value:.2f}"],
+        ["Total Volume", f"{total_volume:.2f}"],
+        ["Total P&L", f"{total_pnl:+.2f}"],
+        ["Total ROI", f"{total_pnl_percent:+.2f}%"],
+        ["", ""],  # Separator
+        ["Total Predictions", str(total_predictions)],
+        ["Completed Positions", str(completed_positions)],
+        ["Winning Trades", str(winning_trades)],
+        ["Win Rate", f"{win_rate:.2f}%"],
+    ]
+    
+    print(tabulate(summary_rows, headers=["Metric", "Value"], tablefmt="grid", stralign="left"))
+    print("=" * 80)
+
+def positions_menu():
+    """
+    Submenu for viewing positions: Open, Closed, or All.
+    Supports pagination with navigation options.
+    """
+    current_filter = None
+    current_offset = 0
+    current_limit = DEFAULT_POSITIONS_LIMIT
+    pagination_info = None
+    exit_menu = False
+    
+    while True:
+        if exit_menu:
+            break
+        if current_filter is None:
+            # Main menu
+            print("\nPositions Menu:")
+            print("  1) Open Positions")
+            print("  2) Closed Positions")
+            print("  3) All Positions")
+            print("  4) Positions Summary")
+            print("  5) Back to Trading Menu")
+            
+            choice = input("\nEnter choice: ").strip()
+            
+            if choice == "1":
+                current_filter = "live"
+                current_offset = 0
+                filter_name = "open"
+            elif choice == "2":
+                current_filter = "closed"
+                current_offset = 0
+                filter_name = "closed"
+            elif choice == "3":
+                current_filter = "all"
+                current_offset = 0
+                filter_name = "all"
+            elif choice == "4":
+                print("\nFetching positions summary...")
+                summary_data = fetch_positions_summary()
+                _display_positions_summary(summary_data)
+                # Return to menu after displaying summary
+                input("\nPress Enter to continue...")
+                continue
+            elif choice == "5":
+                break
+            else:
+                print("Invalid choice. Please enter a number from 1 to 5.\n")
+                continue
+            
+            # Fetch and display positions
+            print(f"\nFetching {filter_name} positions...")
+            positions_data = fetch_positions(filter_type=current_filter, limit=current_limit, offset=current_offset)
+            pagination_info, positions = _display_positions(positions_data)
+            
+            # For open positions, loop: prompt for selection, then show menu
+            if current_filter == "live" and positions:
+                while True:
+                    _select_position_for_trade(positions)
+                    # Show menu after order attempt
+                    print("\nOptions:")
+                    print("  1) Refresh Open Positions")
+                    print("  2) Back to Positions Menu")
+                    print("  3) Back to Trading Menu")
+                    choice = input("\nEnter choice (1/2/3 or Enter to refresh): ").strip()
+                    if choice == "2":
+                        current_filter = None
+                        current_offset = 0
+                        pagination_info = None
+                        break  # Exit the while loop, go back to main menu
+                    elif choice == "3":
+                        exit_menu = True  # Signal to exit positions_menu entirely
+                        break  # Exit the while loop
+                    else:
+                        # Default: refresh positions and loop again to prompt for selection
+                        print(f"\nRefreshing {filter_name} positions...")
+                        positions_data = fetch_positions(filter_type=current_filter, limit=current_limit, offset=current_offset)
+                        pagination_info, positions = _display_positions(positions_data)
+                        if not positions:
+                            # No positions left, go back to main menu
+                            current_filter = None
+                            break
+                        # Loop will continue and prompt for selection again
+                # After breaking from open positions loop, continue outer loop
+                if current_filter is None:
+                    continue
+        else:
+            # Pagination menu
+            print("\nNavigation:")
+            nav_options = []
+            nav_num = 1
+            
+            if pagination_info and pagination_info.get("has_more"):
+                nav_options.append(("next", "Next Page"))
+                print(f"  {nav_num}) Next Page")
+                nav_num += 1
+            
+            if current_offset > 0:
+                nav_options.append(("prev", "Previous Page"))
+                print(f"  {nav_num}) Previous Page")
+                nav_num += 1
+            
+            nav_options.append(("refresh", "Refresh Current Page"))
+            print(f"  {nav_num}) Refresh Current Page")
+            nav_num += 1
+            
+            nav_options.append(("back", "Back to Positions Menu"))
+            print(f"  {nav_num}) Back to Positions Menu")
+            nav_num += 1
+            
+            nav_options.append(("main", "Back to Trading Menu"))
+            print(f"  {nav_num}) Back to Trading Menu")
+            
+            choice = input("\nEnter choice: ").strip()
+            
+            try:
+                choice_num = int(choice)
+                if 1 <= choice_num <= len(nav_options):
+                    action, _ = nav_options[choice_num - 1]
+                    
+                    if action == "next":
+                        current_offset += current_limit
+                        print(f"\nFetching positions (offset {current_offset})...")
+                        positions_data = fetch_positions(filter_type=current_filter, limit=current_limit, offset=current_offset)
+                        pagination_info, positions = _display_positions(positions_data)
+                        # For open positions, immediately prompt for position selection
+                        if current_filter == "live" and positions:
+                            _select_position_for_trade(positions)
+                            # Show menu after order attempt
+                            print("\nOptions:")
+                            print("  1) Refresh Open Positions")
+                            print("  2) Back to Positions Menu")
+                            print("  3) Back to Trading Menu")
+                            choice = input("\nEnter choice (1/2/3 or Enter to refresh): ").strip()
+                            if choice == "2":
+                                current_filter = None
+                                current_offset = 0
+                                pagination_info = None
+                                continue
+                            elif choice == "3":
+                                break
+                            else:
+                                # Default: refresh positions
+                                positions_data = fetch_positions(filter_type=current_filter, limit=current_limit, offset=current_offset)
+                                pagination_info, positions = _display_positions(positions_data)
+                    elif action == "prev":
+                        current_offset = max(0, current_offset - current_limit)
+                        print(f"\nFetching positions (offset {current_offset})...")
+                        positions_data = fetch_positions(filter_type=current_filter, limit=current_limit, offset=current_offset)
+                        pagination_info, positions = _display_positions(positions_data)
+                        # For open positions, immediately prompt for position selection
+                        if current_filter == "live" and positions:
+                            _select_position_for_trade(positions)
+                            # Show menu after order attempt
+                            print("\nOptions:")
+                            print("  1) Refresh Open Positions")
+                            print("  2) Back to Positions Menu")
+                            print("  3) Back to Trading Menu")
+                            choice = input("\nEnter choice (1/2/3 or Enter to refresh): ").strip()
+                            if choice == "2":
+                                current_filter = None
+                                current_offset = 0
+                                pagination_info = None
+                                continue
+                            elif choice == "3":
+                                break
+                            else:
+                                # Default: refresh positions
+                                positions_data = fetch_positions(filter_type=current_filter, limit=current_limit, offset=current_offset)
+                                pagination_info, positions = _display_positions(positions_data)
+                    elif action == "refresh":
+                        print(f"\nRefreshing positions (offset {current_offset})...")
+                        positions_data = fetch_positions(filter_type=current_filter, limit=current_limit, offset=current_offset)
+                        pagination_info, positions = _display_positions(positions_data)
+                        # For open positions, immediately prompt for position selection
+                        if current_filter == "live" and positions:
+                            _select_position_for_trade(positions)
+                            # Show menu after order attempt
+                            print("\nOptions:")
+                            print("  1) Refresh Open Positions")
+                            print("  2) Back to Positions Menu")
+                            print("  3) Back to Trading Menu")
+                            choice = input("\nEnter choice (1/2/3 or Enter to refresh): ").strip()
+                            if choice == "2":
+                                current_filter = None
+                                current_offset = 0
+                                pagination_info = None
+                                continue
+                            elif choice == "3":
+                                break
+                            else:
+                                # Default: refresh positions
+                                positions_data = fetch_positions(filter_type=current_filter, limit=current_limit, offset=current_offset)
+                                pagination_info, positions = _display_positions(positions_data)
+                    elif action == "back":
+                        current_filter = None
+                        current_offset = 0
+                        pagination_info = None
+                    elif action == "main":
+                        break
+                else:
+                    print("Invalid choice. Please enter a number from the menu.\n")
+            except ValueError:
+                print("Invalid input. Please enter a number.\n")
+
 def start_trading_flow():
     """
     Submenu for trading: auto-creates session if needed, search markets, place orders.
@@ -895,13 +1771,16 @@ def start_trading_flow():
     while True:
         print("\nTrading Menu:")
         print("  1) Search and Trade Markets")
-        print("  2) Refresh Trading Session")
-        print("  3) Back to Main Menu")
+        print("  2) See Positions")
+        print("  3) Refresh Trading Session")
+        print("  4) Back to Main Menu")
         choice = input("\nEnter choice: ").strip()
 
         if choice == "1":
             search_markets()
         elif choice == "2":
+            positions_menu()
+        elif choice == "3":
             try:
                 session = initiate_trading_session()
                 if session:
@@ -911,10 +1790,10 @@ def start_trading_flow():
                     print("Trading session could not be refreshed.")
             except Exception as exc:
                 print(f"Failed to refresh trading session: {exc}")
-        elif choice == "3":
+        elif choice == "4":
             break
         else:
-            print("Invalid choice. Please enter a number from 1 to 3.\n")
+            print("Invalid choice. Please enter a number from 1 to 4.\n")
 
 def initiate_trading_session():
     """
