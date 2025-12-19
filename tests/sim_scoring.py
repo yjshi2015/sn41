@@ -110,14 +110,27 @@ def calculate_historical_payouts(miner_history, general_pool_history, all_uids, 
                 if trade.get("is_completed", False):
                     trade_date_str = trade.get("completed_at")
                     if trade_date_str:
-                        # Convert both dates to strings for comparison since epoch_date is a string
-                        if isinstance(trade_date_str, str):
-                            trade_date_str_clean = trade_date_str
-                        else:
-                            trade_date_str_clean = str(trade_date_str)
-                        
-                        if trade_date_str_clean <= epoch_date:
-                            epoch_trades.append(trade)
+                        # Parse the completed_at timestamp to extract just the date
+                        # It may be in ISO format (e.g., "2025-11-29T16:35:34.634Z") or just a date string
+                        try:
+                            if isinstance(trade_date_str, str):
+                                # Handle ISO format with timezone
+                                if 'T' in trade_date_str:
+                                    # Extract date part from ISO timestamp
+                                    trade_date_only = trade_date_str.split('T')[0]
+                                else:
+                                    # Already just a date string
+                                    trade_date_only = trade_date_str
+                            else:
+                                trade_date_only = str(trade_date_str)
+                            
+                            # Compare date strings (format: "YYYY-MM-DD")
+                            if trade_date_only <= epoch_date:
+                                epoch_trades.append(trade)
+                        except Exception as e:
+                            if debug:
+                                print(f"  -> Warning: Could not parse date '{trade_date_str}': {e}")
+                            continue
             
             if debug:
                 print(f"Epoch {epoch_idx} ({epoch_date}): {len(epoch_trades)} trades")
