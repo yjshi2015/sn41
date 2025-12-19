@@ -997,6 +997,10 @@ def print_pool_stats(miner_history, general_pool_history, include_current_epoch=
         print("--- MINER POOL STATS ---")
         miner_stats = create_pool_stats_table(miner_history, "Miner", include_current_epoch, miner_scores)
         print(tabulate(miner_stats, headers=headers, tablefmt="grid", stralign="right"))
+        # Add note about weight boost if applicable
+        if include_current_epoch and MINER_POOL_WEIGHT_BOOST_PERCENTAGE > 0:
+            boost_percentage = MINER_POOL_WEIGHT_BOOST_PERCENTAGE * 100
+            print(f"* Miner payouts are boosted by {boost_percentage:.0f}% and reflected in 'Ep. Earnings' and 'Ep. Earnings/Fees'")
     else:
         print("--- MINER POOL STATS ---")
         print("No miners found in data")
@@ -1076,6 +1080,9 @@ def create_pool_stats_table(epoch_history, pool_type, include_current_epoch=Fals
             for i, score_entity_id in enumerate(scores.get('entity_ids', [])):
                 if score_entity_id == entity_id:
                     earnings = scores['tokens'][i] if scores['tokens'][i] > 0 else 0
+                    # If miner pool weight boost is enabled, apply the boost to the earnings
+                    if MINER_POOL_WEIGHT_BOOST_PERCENTAGE > 0:
+                        earnings = earnings * (1 + MINER_POOL_WEIGHT_BOOST_PERCENTAGE)
                     break
 
         # Calculate the % of earnings of their PnL
@@ -1128,7 +1135,7 @@ def create_pool_stats_table(epoch_history, pool_type, include_current_epoch=Fals
     if scores is not None and 'tokens' in scores:
         # Sort by earnings (last column when include_current_epoch=True)
         if include_current_epoch:
-            table_data.sort(key=lambda x: float(x[-3]), reverse=True)  # Sort by Earnings
+            table_data.sort(key=lambda x: float(x[-2]), reverse=True)  # Sort by Earnings
         else:
             # If no current epoch data but we have scores, we need to get earnings differently
             # For now, fall back to PnL sorting
@@ -1240,7 +1247,8 @@ def calculate_weights(miners_scores: Dict[str, Any], general_pool_scores: Dict[s
         #print(f"Miner {miner_uid} tokens allocated: {miner_tokens:,.2f}, weight: {miner_weight:.4f}")
         miner_weights[miner_uid] = miner_weight
     
-    total_miner_pool_tokens = np.sum(miner_tokens_allocated)
+    # Calculate total miner pool tokens (excluding penalized miners)
+    total_miner_pool_tokens = sum(miner_tokens_allocated[i] for i, uid in enumerate(miner_entity_ids) if uid not in miners_to_penalize)
     #bt.logging.info(f"Miner pool total epoch units: {total_miner_pool_tokens:,.2f}")
     print(f"Miner pool total epoch units: {total_miner_pool_tokens:,.2f}")
 
